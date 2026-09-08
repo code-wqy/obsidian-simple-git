@@ -1,75 +1,115 @@
-import { App, Notice, Plugin, PluginSettingTab, Setting, DataWriteOptions } from "obsidian";
-import git, { GitAuth, FsPlugin } from "isomorphic-git";
+import { App, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
+import git, { GitAuth } from "isomorphic-git";
 import http from "isomorphic-git/http/web";
 
-class ObsidianFsAdapter implements FsPlugin {
+class ObsidianFsAdapter {
   private adapter: any;
   private basePath: string;
+  promises: any;
 
   constructor(adapter: any, basePath: string) {
     this.adapter = adapter;
     this.basePath = basePath;
-  }
-
-  private toRelativePath(filepath: string): string {
-    if (filepath.startsWith(this.basePath)) {
-      return filepath.slice(this.basePath.length).replace(/^[/\\]/, "");
-    }
-    return filepath.replace(/^[/\\]/, "");
-  }
-
-  async readFile(filepath: string, options?: { encoding?: string }): Promise<string | Uint8Array> {
-    const relativePath = this.toRelativePath(filepath);
-    if (options?.encoding === "utf8" || options?.encoding === "utf-8") {
-      return await this.adapter.read(relativePath);
-    }
-    const buffer = await this.adapter.readBinary(relativePath);
-    return new Uint8Array(buffer);
-  }
-
-  async writeFile(filepath: string, data: string | Uint8Array | ArrayBuffer, options?: DataWriteOptions): Promise<void> {
-    const relativePath = this.toRelativePath(filepath);
-    if (typeof data === "string") {
-      await this.adapter.write(relativePath, data);
-    } else {
-      await this.adapter.writeBinary(relativePath, data instanceof ArrayBuffer ? data : data.buffer);
-    }
-  }
-
-  async readdir(filepath: string, options?: any): Promise<string[]> {
-    const relativePath = this.toRelativePath(filepath);
-    return await this.adapter.list(relativePath);
-  }
-
-  async mkdir(filepath: string, mode?: number, options?: any): Promise<void> {
-    const relativePath = this.toRelativePath(filepath);
-    await this.adapter.mkdir(relativePath);
-  }
-
-  async rmdir(filepath: string, options?: any): Promise<void> {
-    const relativePath = this.toRelativePath(filepath);
-    await this.adapter.rmdir(relativePath);
-  }
-
-  async stat(filepath: string, options?: any): Promise<{ type: string; mode: number; size: number; ino: number; mtimeMs: number }> {
-    const relativePath = this.toRelativePath(filepath);
-    const exists = await this.adapter.exists(relativePath);
-    if (!exists) {
-      throw new Error(`ENOENT: no such file or directory, stat '${filepath}'`);
-    }
-    const stats = await this.adapter.stat(relativePath);
-    const isDir = await this.adapter.exists(relativePath + "/") || !relativePath.includes(".");
-    return {
-      type: isDir ? "dir" : "file",
-      mode: 0o644,
-      size: stats?.size || 0,
-      ino: 0,
-      mtimeMs: stats?.mtime || Date.now(),
+    
+    const toRelativePath = (filepath: string): string => {
+      if (filepath.startsWith(this.basePath)) {
+        return filepath.slice(this.basePath.length).replace(/^[/\\]/, "");
+      }
+      return filepath.replace(/^[/\\]/, "");
     };
-  }
 
-  async lstat(filepath: string, options?: any): Promise<{ type: string; mode: number; size: number; ino: number; mtimeMs: number }> {
-    return this.stat(filepath, options);
+    this.promises = {
+      readFile: async (filepath: string, options?: { encoding?: string }): Promise<string | Uint8Array> => {
+        const relativePath = toRelativePath(filepath);
+        if (options?.encoding === "utf8" || options?.encoding === "utf-8") {
+          return await this.adapter.read(relativePath);
+        }
+        const buffer = await this.adapter.readBinary(relativePath);
+        return new Uint8Array(buffer);
+      },
+
+      writeFile: async (filepath: string, data: string | Uint8Array | ArrayBuffer): Promise<void> => {
+        const relativePath = toRelativePath(filepath);
+        if (typeof data === "string") {
+          await this.adapter.write(relativePath, data);
+        } else {
+          await this.adapter.writeBinary(relativePath, data instanceof ArrayBuffer ? data : data.buffer);
+        }
+      },
+
+      readdir: async (filepath: string): Promise<string[]> => {
+        const relativePath = toRelativePath(filepath);
+        return await this.adapter.list(relativePath);
+      },
+
+      mkdir: async (filepath: string): Promise<void> => {
+        const relativePath = toRelativePath(filepath);
+        try {
+          await this.adapter.mkdir(relativePath);
+        } catch (e: any) {
+          if (e.message?.includes("already exists")) return;
+          throw e;
+        }
+      },
+
+      rmdir: async (filepath: string): Promise<void> => {
+        const relativePath = toRelativePath(filepath);
+        await this.adapter.rmdir(relativePath);
+      },
+
+      stat: async (filepath: string): Promise<{ type: string; mode: number; size: number; ino: number; mtimeMs: number }> => {
+        const relativePath = toRelativePath(filepath);
+        const exists = await this.adapter.exists(relativePath);
+        if (!exists) {
+          const err: any = new Error(`ENOENT: no such file or directory, stat '${filepath}'`);
+          err.code = "ENOENT";
+          throw err;
+        }
+        const stats = await this.adapter.stat(relativePath);
+        const isDir = stats?.ctime ? false : true;
+        return {
+          type: isDir ? "dir" : "file",
+          mode: 0o666,
+          size: stats?.size || 0,
+          ino: 0,
+          mtimeMs: stats?.mtime || Date.now(),
+        };
+      },
+
+      lstat: async (filepath: string): Promise<{ type: string; mode: number; size: number; ino: number; mtimeMs: number }> => {
+        return this.promises.stat(filepath);
+      },
+
+      readlink: async (filepath: string): Promise<string> => {
+        throw new Error("readlink not supported");
+      },
+
+      symlink: async (target: string, path: string): Promise<void> => {
+        throw new Error("symlink not supported");
+      },
+
+      unlink: async (filepath: string): Promise<void> => {
+        const relativePath = toRelativePath(filepath);
+        if (this.adapter.remove) {
+          await this.adapter.remove(relativePath);
+        } else if (this.adapter.unlink) {
+          await this.adapter.unlink(relativePath);
+        } else {
+          throw new Error("No remove method available on adapter");
+        }
+      },
+
+      rm: async (filepath: string): Promise<void> => {
+        const relativePath = toRelativePath(filepath);
+        if (this.adapter.remove) {
+          await this.adapter.remove(relativePath);
+        } else if (this.adapter.unlink) {
+          await this.adapter.unlink(relativePath);
+        } else {
+          throw new Error("No remove method available on adapter");
+        }
+      },
+    };
   }
 }
 
@@ -97,6 +137,7 @@ export default class SimpleGitSyncPlugin extends Plugin {
     await this.loadSettings();
 
     this.addRibbonIcon("refresh-cw", "Git Pull", () => this.doPull());
+    this.addRibbonIcon("git-branch", "Init Git Repo", () => this.doInit());
 
     this.addCommand({
       id: "simple-git-pull",
@@ -168,16 +209,20 @@ export default class SimpleGitSyncPlugin extends Plugin {
     }
   }
 
-  private getFs(): FsPlugin {
+  private getFs(): ObsidianFsAdapter {
     return new ObsidianFsAdapter(this.app.vault.adapter, this.getDir());
   }
 
   async doInit() {
     try {
-      await git.init({ fs: this.getFs(), dir: this.getDir() });
+      const fs = this.getFs();
+      const dir = this.getDir();
+      console.log("Simple Git: Initializing...", { dir, hasFs: !!fs, hasPromises: !!fs.promises });
+      await git.init({ fs, dir });
       new Notice("Simple Git: Repository initialized");
     } catch (e: any) {
-      new Notice(`Simple Git: Init failed - ${e.message}`);
+      console.error("Simple Git Init Error:", e);
+      new Notice(`Simple Git: Init failed - ${e.message} (check console for details)`);
     }
   }
 
