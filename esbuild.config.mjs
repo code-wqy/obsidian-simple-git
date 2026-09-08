@@ -8,6 +8,11 @@ esbuild
   .build({
     entryPoints: ["src/main.ts"],
     bundle: true,
+    alias: {
+      // Mobile Obsidian has no Node.js `require("buffer")`. Force dependencies
+      // such as safe-buffer to use the browser polyfill and bundle it.
+      buffer: "buffer/",
+    },
     external: [
       "obsidian",
       "electron",
@@ -22,7 +27,7 @@ esbuild
       "@lezer/common",
       "@lezer/highlight",
       "@lezer/lr",
-      ...builtins,
+      ...builtins.filter((moduleName) => moduleName !== "buffer"),
     ],
     format: "cjs",
     target: "es2020",

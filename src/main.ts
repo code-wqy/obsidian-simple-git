@@ -134,14 +134,23 @@ class ObsidianFsAdapter {
         // Obsidian adapter stat returns { ctime, mtime, size } for files
         // For directories, it may return null or have different structure
         const isDir = !stats || !stats.size;
+        const mtimeMs = stats?.mtime || Date.now();
+        const ctimeMs = stats?.ctime || mtimeMs;
         return {
           isDirectory: () => isDir,
           isFile: () => !isDir,
           isSymbolicLink: () => false,
           size: stats?.size || 0,
-          mtimeMs: stats?.mtime || Date.now(),
+          mtimeMs,
+          ctimeMs,
+          mtime: new Date(mtimeMs),
+          ctime: new Date(ctimeMs),
           mode: 0o666,
+          dev: 0,
           ino: 0,
+          uid: 0,
+          gid: 0,
+          nlink: 1,
         };
       },
 
@@ -319,6 +328,7 @@ export default class SimpleGitSyncPlugin extends Plugin {
       });
       new Notice("Simple Git: Pull successful");
     } catch (e: any) {
+      console.error("Simple Git Pull Error:", e);
       new Notice(`Simple Git: Pull failed - ${e.message}`);
     }
   }
@@ -371,6 +381,7 @@ export default class SimpleGitSyncPlugin extends Plugin {
 
       new Notice(`Simple Git: Committed ${changedFiles.length} file(s) and pushed`);
     } catch (e: any) {
+      console.error("Simple Git Commit/Push Error:", e);
       new Notice(`Simple Git: Commit/Push failed - ${e.message}`);
     }
   }

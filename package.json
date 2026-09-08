@@ -1,6 +1,6 @@
 {
   "name": "simple-git-sync",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "private": true,
   "scripts": {
     "dev": "node esbuild.config.mjs",
@@ -15,6 +15,7 @@
     "typescript": "^5.4.0"
   },
   "dependencies": {
+    "buffer": "^6.0.3",
     "isomorphic-git": "^1.25.0"
   }
 }
