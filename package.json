@@ -1,10 +1,11 @@
 {
   "name": "simple-git-sync",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "private": true,
   "scripts": {
     "dev": "node esbuild.config.mjs",
-    "build": "node esbuild.config.mjs production"
+    "build": "node esbuild.config.mjs production",
+    "test": "npm run build && node --test tests/mobile-smoke.cjs"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

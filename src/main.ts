@@ -8,6 +8,7 @@ interface Strings {
   menuForcePull: string;
   menuCommitPush: string;
   menuInit: string;
+  menuClone: string;
   confirmForcePullTitle: string;
   confirmForcePullMessage: string;
   confirmCancel: string;
@@ -21,6 +22,13 @@ interface Strings {
   noticeCommitPushFail: (m: string) => string;
   noticeInitOk: string;
   noticeInitFail: (m: string) => string;
+  cloneTitle: string;
+  cloneMessage: (vault: string) => string;
+  cloneConfirm: string;
+  noticeCloneOk: string;
+  noticeCloneFail: (m: string) => string;
+  noticeRepoExists: string;
+  noticeRepoMissing: string;
   noticeNoRemote: string;
   noticeLoadFail: (m: string) => string;
   settingsTitle: string;
@@ -44,6 +52,7 @@ const STRINGS: Record<Lang, Strings> = {
     menuForcePull: "Force pull (discard local changes)",
     menuCommitPush: "Commit all and push",
     menuInit: "Initialize repository",
+    menuClone: "Clone remote into this vault",
     confirmForcePullTitle: "Force pull",
     confirmForcePullMessage:
       "This will discard ALL local uncommitted changes and reset the vault to the remote state. Unsynced edits will be lost. Continue?",
@@ -58,6 +67,14 @@ const STRINGS: Record<Lang, Strings> = {
     noticeCommitPushFail: (m) => `Simple Git: Commit/Push failed - ${m}`,
     noticeInitOk: "Simple Git: Repository initialized",
     noticeInitFail: (m) => `Simple Git: Init failed - ${m} (check console for details)`,
+    cloneTitle: "Clone remote repository",
+    cloneMessage: (vault) =>
+      `Remote files will be cloned directly into the current vault “${vault}”. Existing files are not overwritten: cloning stops if a remote file conflicts with a local file. Continue?`,
+    cloneConfirm: "Clone into vault",
+    noticeCloneOk: "Simple Git: Clone successful. Restart Obsidian to refresh the vault.",
+    noticeCloneFail: (m) => `Simple Git: Clone failed - ${m}`,
+    noticeRepoExists: "This vault already contains a Git repository.",
+    noticeRepoMissing: "This vault is not a Git repository. Clone or initialize it first.",
     noticeNoRemote: "Remote URL not set. Please configure in plugin settings.",
     noticeLoadFail: (m) => `Simple Git: Failed to load - ${m}`,
     settingsTitle: "Simple Git Sync Settings",
@@ -79,6 +96,7 @@ const STRINGS: Record<Lang, Strings> = {
     menuForcePull: "强制拉取（丢弃本地修改）",
     menuCommitPush: "提交全部并推送",
     menuInit: "初始化仓库",
+    menuClone: "克隆远端到当前仓库",
     confirmForcePullTitle: "强制拉取",
     confirmForcePullMessage:
       "将丢弃所有未提交的本地修改，把仓库重置为远程状态。未同步的改动会丢失。确定继续吗？",
@@ -93,6 +111,14 @@ const STRINGS: Record<Lang, Strings> = {
     noticeCommitPushFail: (m) => `Simple Git：提交/推送失败 - ${m}`,
     noticeInitOk: "Simple Git：仓库初始化完成",
     noticeInitFail: (m) => `Simple Git：初始化失败 - ${m}（详情见控制台）`,
+    cloneTitle: "克隆远端仓库",
+    cloneMessage: (vault) =>
+      `远端文件将直接克隆到当前已选择的仓库“${vault}”根目录。不会覆盖同名本地文件；如有冲突，克隆会停止。是否继续？`,
+    cloneConfirm: "克隆到当前仓库",
+    noticeCloneOk: "Simple Git：克隆成功。请重启 Obsidian 以刷新仓库。",
+    noticeCloneFail: (m) => `Simple Git：克隆失败 - ${m}`,
+    noticeRepoExists: "当前仓库中已经存在 Git 仓库。",
+    noticeRepoMissing: "当前仓库还不是 Git 仓库，请先克隆或初始化。",
     noticeNoRemote: "尚未设置远程仓库地址，请在插件设置中配置。",
     noticeLoadFail: (m) => `Simple Git：加载失败 - ${m}`,
     settingsTitle: "Simple Git Sync 设置",
@@ -134,69 +160,54 @@ async function collectBody(body: AsyncIterableIterator<Uint8Array> | undefined):
 
 const http = {
   async request({ url, method = "GET", headers = {}, body }: any) {
-    if (Platform.isDesktop) {
-      const bodyBuffer = await collectBody(body);
-      const response = await requestUrl({
-        url,
-        method,
-        headers,
-        body: bodyBuffer,
-        throw: false,
-      });
-      return {
-        url,
-        method,
-        statusCode: response.status,
-        statusMessage: "",
-        headers: response.headers,
-        body: bufferToAsyncGen(response.arrayBuffer),
-      };
-    } else {
-      const fetchBody = body ? await collectBody(body) : undefined;
-      const response = await fetch(url, { method, headers, body: fetchBody });
-      const buffer = await response.arrayBuffer();
-      return {
-        url: response.url,
-        method: response.url ? method : undefined,
-        statusCode: response.status,
-        statusMessage: response.statusText,
-        headers: Object.fromEntries(response.headers.entries()),
-        body: bufferToAsyncGen(buffer),
-      };
-    }
+    const bodyBuffer = await collectBody(body);
+    const response = await requestUrl({
+      url,
+      method,
+      headers,
+      body: bodyBuffer,
+      throw: false,
+    });
+    return {
+      url,
+      method,
+      statusCode: response.status,
+      statusMessage: "",
+      headers: response.headers,
+      body: bufferToAsyncGen(response.arrayBuffer),
+    };
   },
 };
 
-class ObsidianFsAdapter {
+export class ObsidianFsAdapter {
   private adapter: any;
-  private basePath: string;
   promises: any;
 
-  constructor(adapter: any, basePath: string) {
+  constructor(adapter: any) {
     this.adapter = adapter;
-    // Normalize basePath to use forward slashes and remove trailing slash
-    this.basePath = basePath.replace(/\\/g, "/").replace(/\/$/, "");
-    
+
     const toRelativePath = (filepath: string): string => {
-      // Normalize to forward slashes
-      const normalized = filepath.replace(/\\/g, "/");
-      
-      // If path starts with basePath, strip it
-      if (normalized.startsWith(this.basePath + "/")) {
-        return normalized.slice(this.basePath.length + 1);
-      }
-      if (normalized === this.basePath) {
-        return "";
-      }
-      
-      // If it's already relative or just a filename, return as-is
-      return normalized.replace(/^\/+/, "");
+      const normalized = filepath
+        .replace(/\\/g, "/")
+        .replace(/^\/+/, "")
+        .replace(/\/$/, "");
+      if (normalized === ".") return "";
+      return normalized.replace(/^\.\//, "");
+    };
+
+    const basename = (filepath: string): string => {
+      const normalized = filepath.replace(/\\/g, "/").replace(/\/$/, "");
+      return normalized.slice(normalized.lastIndexOf("/") + 1);
     };
 
     this.promises = {
-      readFile: async (filepath: string, options?: { encoding?: string }): Promise<string | Uint8Array> => {
+      readFile: async (
+        filepath: string,
+        options?: { encoding?: string } | string
+      ): Promise<string | Uint8Array> => {
         const relativePath = toRelativePath(filepath);
-        if (options?.encoding === "utf8" || options?.encoding === "utf-8") {
+        const encoding = typeof options === "string" ? options : options?.encoding;
+        if (encoding === "utf8" || encoding === "utf-8") {
           return await this.adapter.read(relativePath);
         }
         const buffer = await this.adapter.readBinary(relativePath);
@@ -208,32 +219,48 @@ class ObsidianFsAdapter {
         if (typeof data === "string") {
           await this.adapter.write(relativePath, data);
         } else {
-          await this.adapter.writeBinary(relativePath, data instanceof ArrayBuffer ? data : data.buffer);
+          const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+          await this.adapter.writeBinary(relativePath, new Uint8Array(bytes).buffer);
         }
       },
 
       readdir: async (filepath: string): Promise<string[]> => {
         const relativePath = toRelativePath(filepath);
-        return await this.adapter.list(relativePath);
+        const listed = await this.adapter.list(relativePath);
+        return [...listed.files, ...listed.folders].map(basename);
       },
 
       mkdir: async (filepath: string): Promise<void> => {
         const relativePath = toRelativePath(filepath);
-        try {
-          await this.adapter.mkdir(relativePath);
-        } catch (e: any) {
-          if (e.message?.includes("already exists")) return;
-          throw e;
-        }
+        if (!relativePath || await this.adapter.exists(relativePath)) return;
+        await this.adapter.mkdir(relativePath);
       },
 
-      rmdir: async (filepath: string): Promise<void> => {
+      rmdir: async (filepath: string, options?: { recursive?: boolean }): Promise<void> => {
         const relativePath = toRelativePath(filepath);
-        await this.adapter.rmdir(relativePath);
+        await this.adapter.rmdir(relativePath, options?.recursive === true);
       },
 
       stat: async (filepath: string): Promise<any> => {
         const relativePath = toRelativePath(filepath);
+        if (!relativePath) {
+          return {
+            isDirectory: () => true,
+            isFile: () => false,
+            isSymbolicLink: () => false,
+            size: 0,
+            mtimeMs: 0,
+            ctimeMs: 0,
+            mtime: new Date(0),
+            ctime: new Date(0),
+            mode: 0o755,
+            dev: 0,
+            ino: 0,
+            uid: 0,
+            gid: 0,
+            nlink: 1,
+          };
+        }
         const exists = await this.adapter.exists(relativePath);
         if (!exists) {
           const err: any = new Error(`ENOENT: no such file or directory, stat '${filepath}'`);
@@ -241,9 +268,7 @@ class ObsidianFsAdapter {
           throw err;
         }
         const stats = await this.adapter.stat(relativePath);
-        // Obsidian adapter stat returns { ctime, mtime, size } for files
-        // For directories, it may return null or have different structure
-        const isDir = !stats || !stats.size;
+        const isDir = stats?.type === "folder";
         const mtimeMs = stats?.mtime || Date.now();
         const ctimeMs = stats?.ctime || mtimeMs;
         return {
@@ -255,7 +280,7 @@ class ObsidianFsAdapter {
           ctimeMs,
           mtime: new Date(mtimeMs),
           ctime: new Date(ctimeMs),
-          mode: 0o666,
+          mode: isDir ? 0o755 : 0o644,
           dev: 0,
           ino: 0,
           uid: 0,
@@ -278,24 +303,12 @@ class ObsidianFsAdapter {
 
       unlink: async (filepath: string): Promise<void> => {
         const relativePath = toRelativePath(filepath);
-        if (this.adapter.remove) {
-          await this.adapter.remove(relativePath);
-        } else if (this.adapter.unlink) {
-          await this.adapter.unlink(relativePath);
-        } else {
-          throw new Error("No remove method available on adapter");
-        }
+        await this.adapter.remove(relativePath);
       },
 
       rm: async (filepath: string): Promise<void> => {
         const relativePath = toRelativePath(filepath);
-        if (this.adapter.remove) {
-          await this.adapter.remove(relativePath);
-        } else if (this.adapter.unlink) {
-          await this.adapter.unlink(relativePath);
-        } else {
-          throw new Error("No remove method available on adapter");
-        }
+        await this.adapter.remove(relativePath);
       },
     };
   }
@@ -357,6 +370,12 @@ export default class SimpleGitSyncPlugin extends Plugin {
       callback: () => this.doInit(),
     });
 
+    this.addCommand({
+      id: "simple-git-clone",
+      name: "Clone remote repository into current vault",
+      callback: () => this.doClone(),
+    });
+
     this.addSettingTab(new SimpleGitSettingTab(this.app, this));
 
     if (this.settings.autoPullOnOpen) {
@@ -387,7 +406,9 @@ export default class SimpleGitSyncPlugin extends Plugin {
   }
 
   private getDir(): string {
-    return this.app.vault.adapter.getBasePath();
+    // Obsidian's DataAdapter is rooted at the currently selected vault on
+    // mobile. isomorphic-git uses this virtual root and never reaches outside.
+    return "/";
   }
 
   private getAuth(): GitAuth {
@@ -413,8 +434,14 @@ export default class SimpleGitSyncPlugin extends Plugin {
     }
   }
 
+  private async ensureRepository(): Promise<void> {
+    if (!await this.app.vault.adapter.exists(".git")) {
+      throw new Error(this.strings.noticeRepoMissing);
+    }
+  }
+
   private getFs(): ObsidianFsAdapter {
-    return new ObsidianFsAdapter(this.app.vault.adapter, this.getDir());
+    return new ObsidianFsAdapter(this.app.vault.adapter);
   }
 
   async doInit() {
@@ -422,12 +449,15 @@ export default class SimpleGitSyncPlugin extends Plugin {
       const fs = this.getFs();
       const dir = this.getDir();
       console.log("Simple Git: Initializing...", { dir, hasFs: !!fs, hasPromises: !!fs.promises });
-      await git.init({ fs, dir });
+      await git.init({ fs, dir, defaultBranch: "main" });
       
       // Set default git config
       const username = this.settings.username || "user";
       await git.setConfig({ fs, dir, path: "user.name", value: username });
       await git.setConfig({ fs, dir, path: "user.email", value: `${username}@local` });
+      if (this.settings.remoteUrl) {
+        await this.ensureRemote();
+      }
       
       new Notice(this.strings.noticeInitOk);
     } catch (e: any) {
@@ -462,17 +492,68 @@ export default class SimpleGitSyncPlugin extends Plugin {
         .setIcon("git-branch")
         .onClick(() => this.doInit())
     );
+    menu.addItem((item) =>
+      item
+        .setTitle(s.menuClone)
+        .setIcon("copy")
+        .onClick(() => this.doClone())
+    );
     menu.showAtMouseEvent(evt);
+  }
+
+  doClone() {
+    const s = this.strings;
+    new ConfirmModal(
+      this.app,
+      s.cloneTitle,
+      s.cloneMessage(this.app.vault.getName()),
+      s.confirmCancel,
+      s.cloneConfirm,
+      () => this.runClone()
+    ).open();
+  }
+
+  private async runClone() {
+    try {
+      if (!this.settings.remoteUrl) {
+        throw new Error(this.strings.noticeNoRemote);
+      }
+      if (await this.app.vault.adapter.exists(".git")) {
+        throw new Error(this.strings.noticeRepoExists);
+      }
+
+      const fs = this.getFs();
+      const dir = this.getDir();
+      await git.clone({
+        fs,
+        http,
+        dir,
+        url: this.settings.remoteUrl,
+        singleBranch: true,
+        noTags: true,
+        onAuth: () => this.getAuth(),
+        nonBlocking: !Platform.isDesktop,
+        batchSize: 50,
+      });
+
+      const username = this.settings.username || "user";
+      await git.setConfig({ fs, dir, path: "user.name", value: username });
+      await git.setConfig({ fs, dir, path: "user.email", value: `${username}@local` });
+      new Notice(this.strings.noticeCloneOk, 10000);
+    } catch (e: any) {
+      console.error("Simple Git Clone Error:", e);
+      new Notice(this.strings.noticeCloneFail(e.message));
+    }
   }
 
   async doPull() {
     try {
+      await this.ensureRepository();
       await this.ensureRemote();
       await git.pull({
         fs: this.getFs(),
         http,
         dir: this.getDir(),
-        auth: this.getAuth(),
         singleBranch: true,
         onAuth: () => this.getAuth(),
       });
@@ -497,6 +578,7 @@ export default class SimpleGitSyncPlugin extends Plugin {
 
   private async runForcePull() {
     try {
+      await this.ensureRepository();
       await this.ensureRemote();
       const fs = this.getFs();
       const dir = this.getDir();
@@ -505,7 +587,6 @@ export default class SimpleGitSyncPlugin extends Plugin {
         http,
         dir,
         remote: "origin",
-        auth: this.getAuth(),
         onAuth: () => this.getAuth(),
         singleBranch: true,
       });
@@ -522,17 +603,18 @@ export default class SimpleGitSyncPlugin extends Plugin {
 
   async doCommitPush() {
     try {
+      await this.ensureRepository();
       await this.ensureRemote();
 
       const status = await git.statusMatrix({
         fs: this.getFs(),
         dir: this.getDir(),
-        filepaths: await this.getTrackedFiles(),
+        filepaths: ["."],
       });
 
       const changedFiles: string[] = [];
-      for (const [filepath, , workdir, stage] of status) {
-        if (workdir !== stage) {
+      for (const [filepath, head, workdir, stage] of status) {
+        if (head !== workdir || head !== stage) {
           changedFiles.push(filepath);
         }
       }
@@ -542,15 +624,22 @@ export default class SimpleGitSyncPlugin extends Plugin {
         return;
       }
 
-      for (const file of changedFiles) {
-        await git.add({ fs: this.getFs(), dir: this.getDir(), filepath: file });
+      const fs = this.getFs();
+      const dir = this.getDir();
+      for (const [filepath, , workdir, stage] of status) {
+        if (workdir === stage) continue;
+        if (workdir === 0) {
+          await git.remove({ fs, dir, filepath });
+        } else {
+          await git.add({ fs, dir, filepath });
+        }
       }
 
       const now = new Date();
       const timestamp = now.toISOString().replace("T", " ").slice(0, 19);
       await git.commit({
-        fs: this.getFs(),
-        dir: this.getDir(),
+        fs,
+        dir,
         message: `vault backup: ${timestamp}`,
         author: {
           name: this.settings.username || "user",
@@ -559,10 +648,9 @@ export default class SimpleGitSyncPlugin extends Plugin {
       });
 
       await git.push({
-        fs: this.getFs(),
+        fs,
         http,
-        dir: this.getDir(),
-        auth: this.getAuth(),
+        dir,
         onAuth: () => this.getAuth(),
       });
 
@@ -570,14 +658,6 @@ export default class SimpleGitSyncPlugin extends Plugin {
     } catch (e: any) {
       console.error("Simple Git Commit/Push Error:", e);
       new Notice(this.strings.noticeCommitPushFail(e.message));
-    }
-  }
-
-  private async getTrackedFiles(): Promise<string[]> {
-    try {
-      return await git.listFiles({ fs: this.getFs(), dir: this.getDir() });
-    } catch {
-      return [];
     }
   }
 
