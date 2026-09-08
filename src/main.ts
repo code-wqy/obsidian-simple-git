@@ -1,6 +1,22 @@
 import { App, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
 import git, { GitAuth } from "isomorphic-git";
-import http from "isomorphic-git/http/web";
+
+const http = {
+  async request({ url, method = "GET", headers = {}, body }: any) {
+    const response = await fetch(url, { method, headers, body });
+    const buffer = await response.arrayBuffer();
+    return {
+      url: response.url,
+      method: response.url ? method : undefined,
+      statusCode: response.status,
+      statusMessage: response.statusText,
+      headers: Object.fromEntries(response.headers.entries()),
+      body: (async function* () {
+        yield new Uint8Array(buffer);
+      })(),
+    };
+  },
+};
 
 class ObsidianFsAdapter {
   private adapter: any;
@@ -238,6 +254,12 @@ export default class SimpleGitSyncPlugin extends Plugin {
       const dir = this.getDir();
       console.log("Simple Git: Initializing...", { dir, hasFs: !!fs, hasPromises: !!fs.promises });
       await git.init({ fs, dir });
+      
+      // Set default git config
+      const username = this.settings.username || "user";
+      await git.setConfig({ fs, dir, path: "user.name", value: username });
+      await git.setConfig({ fs, dir, path: "user.email", value: `${username}@local` });
+      
       new Notice("Simple Git: Repository initialized");
     } catch (e: any) {
       console.error("Simple Git Init Error:", e);
