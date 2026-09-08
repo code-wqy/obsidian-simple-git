@@ -9,13 +9,23 @@ class ObsidianFsAdapter {
 
   constructor(adapter: any, basePath: string) {
     this.adapter = adapter;
-    this.basePath = basePath;
+    // Normalize basePath to use forward slashes and remove trailing slash
+    this.basePath = basePath.replace(/\\/g, "/").replace(/\/$/, "");
     
     const toRelativePath = (filepath: string): string => {
-      if (filepath.startsWith(this.basePath)) {
-        return filepath.slice(this.basePath.length).replace(/^[/\\]/, "");
+      // Normalize to forward slashes
+      const normalized = filepath.replace(/\\/g, "/");
+      
+      // If path starts with basePath, strip it
+      if (normalized.startsWith(this.basePath + "/")) {
+        return normalized.slice(this.basePath.length + 1);
       }
-      return filepath.replace(/^[/\\]/, "");
+      if (normalized === this.basePath) {
+        return "";
+      }
+      
+      // If it's already relative or just a filename, return as-is
+      return normalized.replace(/^\/+/, "");
     };
 
     this.promises = {
@@ -57,7 +67,7 @@ class ObsidianFsAdapter {
         await this.adapter.rmdir(relativePath);
       },
 
-      stat: async (filepath: string): Promise<{ type: string; mode: number; size: number; ino: number; mtimeMs: number }> => {
+      stat: async (filepath: string): Promise<any> => {
         const relativePath = toRelativePath(filepath);
         const exists = await this.adapter.exists(relativePath);
         if (!exists) {
@@ -66,17 +76,21 @@ class ObsidianFsAdapter {
           throw err;
         }
         const stats = await this.adapter.stat(relativePath);
-        const isDir = stats?.ctime ? false : true;
+        // Obsidian adapter stat returns { ctime, mtime, size } for files
+        // For directories, it may return null or have different structure
+        const isDir = !stats || !stats.size;
         return {
-          type: isDir ? "dir" : "file",
-          mode: 0o666,
+          isDirectory: () => isDir,
+          isFile: () => !isDir,
+          isSymbolicLink: () => false,
           size: stats?.size || 0,
-          ino: 0,
           mtimeMs: stats?.mtime || Date.now(),
+          mode: 0o666,
+          ino: 0,
         };
       },
 
-      lstat: async (filepath: string): Promise<{ type: string; mode: number; size: number; ino: number; mtimeMs: number }> => {
+      lstat: async (filepath: string): Promise<any> => {
         return this.promises.stat(filepath);
       },
 
@@ -134,10 +148,11 @@ export default class SimpleGitSyncPlugin extends Plugin {
   private autoPullTimer: number | null = null;
 
   async onload() {
-    await this.loadSettings();
+    try {
+      await this.loadSettings();
 
-    this.addRibbonIcon("refresh-cw", "Git Pull", () => this.doPull());
-    this.addRibbonIcon("git-branch", "Init Git Repo", () => this.doInit());
+      this.addRibbonIcon("refresh-cw", "Git Pull", () => this.doPull());
+      this.addRibbonIcon("git-branch", "Init Git Repo", () => this.doInit());
 
     this.addCommand({
       id: "simple-git-pull",
@@ -173,6 +188,10 @@ export default class SimpleGitSyncPlugin extends Plugin {
         this.settings.autoPullInterval * 60 * 1000
       );
       this.registerInterval(this.autoPullTimer);
+    }
+    } catch (e) {
+      console.error("Simple Git Sync: Failed to load plugin", e);
+      new Notice(`Simple Git: Failed to load - ${(e as Error).message}`);
     }
   }
 
