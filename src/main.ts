@@ -1,5 +1,115 @@
-import { App, Notice, Plugin, PluginSettingTab, Setting, Platform, requestUrl } from "obsidian";
+import { App, Menu, Modal, Notice, Plugin, PluginSettingTab, Setting, Platform, requestUrl } from "obsidian";
 import git, { GitAuth } from "isomorphic-git";
+
+type Lang = "en" | "zh";
+
+interface Strings {
+  menuPull: string;
+  menuForcePull: string;
+  menuCommitPush: string;
+  menuInit: string;
+  confirmForcePullTitle: string;
+  confirmForcePullMessage: string;
+  confirmCancel: string;
+  confirmDiscardAndPull: string;
+  noticePullOk: string;
+  noticePullFail: (m: string) => string;
+  noticeForcePullOk: (b: string) => string;
+  noticeForcePullFail: (m: string) => string;
+  noticeNothingToCommit: string;
+  noticeCommitPushOk: (n: number) => string;
+  noticeCommitPushFail: (m: string) => string;
+  noticeInitOk: string;
+  noticeInitFail: (m: string) => string;
+  noticeNoRemote: string;
+  noticeLoadFail: (m: string) => string;
+  settingsTitle: string;
+  settingLanguage: string;
+  settingLanguageDesc: string;
+  settingRemoteUrl: string;
+  settingRemoteUrlDesc: string;
+  settingUsername: string;
+  settingUsernameDesc: string;
+  settingToken: string;
+  settingTokenDesc: string;
+  settingAutoPullOnOpen: string;
+  settingAutoPullOnOpenDesc: string;
+  settingAutoPullInterval: string;
+  settingAutoPullIntervalDesc: string;
+}
+
+const STRINGS: Record<Lang, Strings> = {
+  en: {
+    menuPull: "Pull",
+    menuForcePull: "Force pull (discard local changes)",
+    menuCommitPush: "Commit all and push",
+    menuInit: "Initialize repository",
+    confirmForcePullTitle: "Force pull",
+    confirmForcePullMessage:
+      "This will discard ALL local uncommitted changes and reset the vault to the remote state. Unsynced edits will be lost. Continue?",
+    confirmCancel: "Cancel",
+    confirmDiscardAndPull: "Discard & pull",
+    noticePullOk: "Simple Git: Pull successful",
+    noticePullFail: (m) => `Simple Git: Pull failed - ${m}`,
+    noticeForcePullOk: (b) => `Simple Git: Force pulled (reset to origin/${b})`,
+    noticeForcePullFail: (m) => `Simple Git: Force pull failed - ${m}`,
+    noticeNothingToCommit: "Simple Git: Nothing to commit",
+    noticeCommitPushOk: (n) => `Simple Git: Committed ${n} file(s) and pushed`,
+    noticeCommitPushFail: (m) => `Simple Git: Commit/Push failed - ${m}`,
+    noticeInitOk: "Simple Git: Repository initialized",
+    noticeInitFail: (m) => `Simple Git: Init failed - ${m} (check console for details)`,
+    noticeNoRemote: "Remote URL not set. Please configure in plugin settings.",
+    noticeLoadFail: (m) => `Simple Git: Failed to load - ${m}`,
+    settingsTitle: "Simple Git Sync Settings",
+    settingLanguage: "Language / 语言",
+    settingLanguageDesc: "UI language for this plugin",
+    settingRemoteUrl: "Remote URL",
+    settingRemoteUrlDesc: "HTTPS URL of your GitHub repository",
+    settingUsername: "Username",
+    settingUsernameDesc: "Your GitHub username",
+    settingToken: "Token / Password",
+    settingTokenDesc: "GitHub Personal Access Token",
+    settingAutoPullOnOpen: "Auto pull on open",
+    settingAutoPullOnOpenDesc: "Automatically pull when vault opens",
+    settingAutoPullInterval: "Auto pull interval (minutes)",
+    settingAutoPullIntervalDesc: "0 = disabled. Pull automatically at this interval.",
+  },
+  zh: {
+    menuPull: "拉取",
+    menuForcePull: "强制拉取（丢弃本地修改）",
+    menuCommitPush: "提交全部并推送",
+    menuInit: "初始化仓库",
+    confirmForcePullTitle: "强制拉取",
+    confirmForcePullMessage:
+      "将丢弃所有未提交的本地修改，把仓库重置为远程状态。未同步的改动会丢失。确定继续吗？",
+    confirmCancel: "取消",
+    confirmDiscardAndPull: "丢弃并拉取",
+    noticePullOk: "Simple Git：拉取成功",
+    noticePullFail: (m) => `Simple Git：拉取失败 - ${m}`,
+    noticeForcePullOk: (b) => `Simple Git：已强制拉取（重置到 origin/${b}）`,
+    noticeForcePullFail: (m) => `Simple Git：强制拉取失败 - ${m}`,
+    noticeNothingToCommit: "Simple Git：没有可提交的内容",
+    noticeCommitPushOk: (n) => `Simple Git：已提交 ${n} 个文件并推送`,
+    noticeCommitPushFail: (m) => `Simple Git：提交/推送失败 - ${m}`,
+    noticeInitOk: "Simple Git：仓库初始化完成",
+    noticeInitFail: (m) => `Simple Git：初始化失败 - ${m}（详情见控制台）`,
+    noticeNoRemote: "尚未设置远程仓库地址，请在插件设置中配置。",
+    noticeLoadFail: (m) => `Simple Git：加载失败 - ${m}`,
+    settingsTitle: "Simple Git Sync 设置",
+    settingLanguage: "语言 / Language",
+    settingLanguageDesc: "插件界面显示语言",
+    settingRemoteUrl: "远程仓库地址",
+    settingRemoteUrlDesc: "GitHub 仓库的 HTTPS 地址",
+    settingUsername: "用户名",
+    settingUsernameDesc: "你的 GitHub 用户名",
+    settingToken: "令牌 / 密码",
+    settingTokenDesc: "GitHub 个人访问令牌（PAT）",
+    settingAutoPullOnOpen: "打开时自动拉取",
+    settingAutoPullOnOpenDesc: "打开仓库时自动执行拉取",
+    settingAutoPullInterval: "自动拉取间隔（分钟）",
+    settingAutoPullIntervalDesc: "0 = 关闭。按此间隔自动拉取。",
+  },
+};
 
 async function* bufferToAsyncGen(buffer: ArrayBuffer): AsyncGenerator<Uint8Array> {
   yield new Uint8Array(buffer);
@@ -197,6 +307,7 @@ interface SimpleGitSettings {
   token: string;
   autoPullOnOpen: boolean;
   autoPullInterval: number;
+  language: Lang;
 }
 
 const DEFAULT_SETTINGS: SimpleGitSettings = {
@@ -205,23 +316,33 @@ const DEFAULT_SETTINGS: SimpleGitSettings = {
   token: "",
   autoPullOnOpen: false,
   autoPullInterval: 0,
+  language: "en",
 };
 
 export default class SimpleGitSyncPlugin extends Plugin {
   settings: SimpleGitSettings;
   private autoPullTimer: number | null = null;
 
+  get strings(): Strings {
+    return STRINGS[this.settings.language] || STRINGS.en;
+  }
+
   async onload() {
     try {
       await this.loadSettings();
 
-      this.addRibbonIcon("refresh-cw", "Git Pull", () => this.doPull());
-      this.addRibbonIcon("git-branch", "Init Git Repo", () => this.doInit());
+      this.addRibbonIcon("git-branch", "Simple Git Sync", (evt) => this.showSyncMenu(evt));
 
     this.addCommand({
       id: "simple-git-pull",
       name: "Pull from remote",
       callback: () => this.doPull(),
+    });
+
+    this.addCommand({
+      id: "simple-git-force-pull",
+      name: "Force pull (discard local changes)",
+      callback: () => this.doForcePull(),
     });
 
     this.addCommand({
@@ -255,7 +376,7 @@ export default class SimpleGitSyncPlugin extends Plugin {
     }
     } catch (e) {
       console.error("Simple Git Sync: Failed to load plugin", e);
-      new Notice(`Simple Git: Failed to load - ${(e as Error).message}`);
+      new Notice(STRINGS.en.noticeLoadFail((e as Error).message));
     }
   }
 
@@ -278,7 +399,7 @@ export default class SimpleGitSyncPlugin extends Plugin {
 
   private async ensureRemote(): Promise<void> {
     if (!this.settings.remoteUrl) {
-      throw new Error("Remote URL not set. Please configure in plugin settings.");
+      throw new Error(this.strings.noticeNoRemote);
     }
     const remotes = await git.listRemotes({ fs: this.getFs(), dir: this.getDir() });
     const hasOrigin = remotes.some((r) => r.remote === "origin");
@@ -308,11 +429,40 @@ export default class SimpleGitSyncPlugin extends Plugin {
       await git.setConfig({ fs, dir, path: "user.name", value: username });
       await git.setConfig({ fs, dir, path: "user.email", value: `${username}@local` });
       
-      new Notice("Simple Git: Repository initialized");
+      new Notice(this.strings.noticeInitOk);
     } catch (e: any) {
       console.error("Simple Git Init Error:", e);
-      new Notice(`Simple Git: Init failed - ${e.message} (check console for details)`);
+      new Notice(this.strings.noticeInitFail(e.message));
     }
+  }
+
+  private showSyncMenu(evt: MouseEvent) {
+    const s = this.strings;
+    const menu = new Menu();
+    menu.addItem((item) =>
+      item.setTitle(s.menuPull).setIcon("download").onClick(() => this.doPull())
+    );
+    menu.addItem((item) =>
+      item
+        .setTitle(s.menuForcePull)
+        .setIcon("rotate-ccw")
+        .onClick(() => this.doForcePull())
+    );
+    menu.addSeparator();
+    menu.addItem((item) =>
+      item
+        .setTitle(s.menuCommitPush)
+        .setIcon("upload")
+        .onClick(() => this.doCommitPush())
+    );
+    menu.addSeparator();
+    menu.addItem((item) =>
+      item
+        .setTitle(s.menuInit)
+        .setIcon("git-branch")
+        .onClick(() => this.doInit())
+    );
+    menu.showAtMouseEvent(evt);
   }
 
   async doPull() {
@@ -326,10 +476,47 @@ export default class SimpleGitSyncPlugin extends Plugin {
         singleBranch: true,
         onAuth: () => this.getAuth(),
       });
-      new Notice("Simple Git: Pull successful");
+      new Notice(this.strings.noticePullOk);
     } catch (e: any) {
       console.error("Simple Git Pull Error:", e);
-      new Notice(`Simple Git: Pull failed - ${e.message}`);
+      new Notice(this.strings.noticePullFail(e.message));
+    }
+  }
+
+  doForcePull() {
+    const s = this.strings;
+    new ConfirmModal(
+      this.app,
+      s.confirmForcePullTitle,
+      s.confirmForcePullMessage,
+      s.confirmCancel,
+      s.confirmDiscardAndPull,
+      () => this.runForcePull()
+    ).open();
+  }
+
+  private async runForcePull() {
+    try {
+      await this.ensureRemote();
+      const fs = this.getFs();
+      const dir = this.getDir();
+      await git.fetch({
+        fs,
+        http,
+        dir,
+        remote: "origin",
+        auth: this.getAuth(),
+        onAuth: () => this.getAuth(),
+        singleBranch: true,
+      });
+      const branch = (await git.currentBranch({ fs, dir })) || "master";
+      const oid = await git.resolveRef({ fs, dir, ref: `origin/${branch}` });
+      await git.branch({ fs, dir, ref: branch, object: oid, force: true });
+      await git.checkout({ fs, dir, ref: branch, force: true });
+      new Notice(this.strings.noticeForcePullOk(branch));
+    } catch (e: any) {
+      console.error("Simple Git Force Pull Error:", e);
+      new Notice(this.strings.noticeForcePullFail(e.message));
     }
   }
 
@@ -351,7 +538,7 @@ export default class SimpleGitSyncPlugin extends Plugin {
       }
 
       if (changedFiles.length === 0) {
-        new Notice("Simple Git: Nothing to commit");
+        new Notice(this.strings.noticeNothingToCommit);
         return;
       }
 
@@ -379,10 +566,10 @@ export default class SimpleGitSyncPlugin extends Plugin {
         onAuth: () => this.getAuth(),
       });
 
-      new Notice(`Simple Git: Committed ${changedFiles.length} file(s) and pushed`);
+      new Notice(this.strings.noticeCommitPushOk(changedFiles.length));
     } catch (e: any) {
       console.error("Simple Git Commit/Push Error:", e);
-      new Notice(`Simple Git: Commit/Push failed - ${e.message}`);
+      new Notice(this.strings.noticeCommitPushFail(e.message));
     }
   }
 
@@ -403,6 +590,44 @@ export default class SimpleGitSyncPlugin extends Plugin {
   }
 }
 
+class ConfirmModal extends Modal {
+  constructor(
+    app: App,
+    private titleText: string,
+    private message: string,
+    private cancelText: string,
+    private confirmText: string,
+    private onConfirm: () => void
+  ) {
+    super(app);
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: this.titleText });
+    contentEl.createEl("p", { text: this.message });
+    const footer = contentEl.createDiv();
+    footer.style.display = "flex";
+    footer.style.justifyContent = "flex-end";
+    footer.style.gap = "8px";
+    footer.style.marginTop = "16px";
+    const cancelBtn = footer.createEl("button", { text: this.cancelText });
+    cancelBtn.onclick = () => this.close();
+    const okBtn = footer.createEl("button", {
+      text: this.confirmText,
+      cls: "mod-warning",
+    });
+    okBtn.onclick = () => {
+      this.close();
+      this.onConfirm();
+    };
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
 class SimpleGitSettingTab extends PluginSettingTab {
   plugin: SimpleGitSyncPlugin;
 
@@ -414,12 +639,27 @@ class SimpleGitSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
+    const s = this.plugin.strings;
 
-    containerEl.createEl("h2", { text: "Simple Git Sync Settings" });
+    containerEl.createEl("h2", { text: s.settingsTitle });
 
     new Setting(containerEl)
-      .setName("Remote URL")
-      .setDesc("HTTPS URL of your GitHub repository")
+      .setName(s.settingLanguage)
+      .setDesc(s.settingLanguageDesc)
+      .addDropdown((drop) => {
+        drop.addOption("en", "English");
+        drop.addOption("zh", "中文");
+        drop.setValue(this.plugin.settings.language);
+        drop.onChange(async (value) => {
+          this.plugin.settings.language = value as Lang;
+          await this.plugin.saveSettings();
+          this.display();
+        });
+      });
+
+    new Setting(containerEl)
+      .setName(s.settingRemoteUrl)
+      .setDesc(s.settingRemoteUrlDesc)
       .addText((text) =>
         text
           .setPlaceholder("https://github.com/user/repo.git")
@@ -431,8 +671,8 @@ class SimpleGitSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Username")
-      .setDesc("Your GitHub username")
+      .setName(s.settingUsername)
+      .setDesc(s.settingUsernameDesc)
       .addText((text) =>
         text
           .setPlaceholder("username")
@@ -444,8 +684,8 @@ class SimpleGitSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Token / Password")
-      .setDesc("GitHub Personal Access Token")
+      .setName(s.settingToken)
+      .setDesc(s.settingTokenDesc)
       .addText((text) =>
         text
           .setPlaceholder("ghp_xxxx or fine-grained token")
@@ -457,8 +697,8 @@ class SimpleGitSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Auto pull on open")
-      .setDesc("Automatically pull when vault opens")
+      .setName(s.settingAutoPullOnOpen)
+      .setDesc(s.settingAutoPullOnOpenDesc)
       .addToggle((toggle) =>
         toggle
           .setValue(this.plugin.settings.autoPullOnOpen)
@@ -469,8 +709,8 @@ class SimpleGitSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Auto pull interval (minutes)")
-      .setDesc("0 = disabled. Pull automatically at this interval.")
+      .setName(s.settingAutoPullInterval)
+      .setDesc(s.settingAutoPullIntervalDesc)
       .addText((text) =>
         text
           .setPlaceholder("0")

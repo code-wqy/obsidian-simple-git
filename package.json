@@ -1,6 +1,6 @@
 {
   "name": "simple-git-sync",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "private": true,
   "scripts": {
     "dev": "node esbuild.config.mjs",
