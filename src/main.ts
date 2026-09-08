@@ -1,6 +1,77 @@
-import { App, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
-import git, { GitAuth } from "isomorphic-git";
+import { App, Notice, Plugin, PluginSettingTab, Setting, DataWriteOptions } from "obsidian";
+import git, { GitAuth, FsPlugin } from "isomorphic-git";
 import http from "isomorphic-git/http/web";
+
+class ObsidianFsAdapter implements FsPlugin {
+  private adapter: any;
+  private basePath: string;
+
+  constructor(adapter: any, basePath: string) {
+    this.adapter = adapter;
+    this.basePath = basePath;
+  }
+
+  private toRelativePath(filepath: string): string {
+    if (filepath.startsWith(this.basePath)) {
+      return filepath.slice(this.basePath.length).replace(/^[/\\]/, "");
+    }
+    return filepath.replace(/^[/\\]/, "");
+  }
+
+  async readFile(filepath: string, options?: { encoding?: string }): Promise<string | Uint8Array> {
+    const relativePath = this.toRelativePath(filepath);
+    if (options?.encoding === "utf8" || options?.encoding === "utf-8") {
+      return await this.adapter.read(relativePath);
+    }
+    const buffer = await this.adapter.readBinary(relativePath);
+    return new Uint8Array(buffer);
+  }
+
+  async writeFile(filepath: string, data: string | Uint8Array | ArrayBuffer, options?: DataWriteOptions): Promise<void> {
+    const relativePath = this.toRelativePath(filepath);
+    if (typeof data === "string") {
+      await this.adapter.write(relativePath, data);
+    } else {
+      await this.adapter.writeBinary(relativePath, data instanceof ArrayBuffer ? data : data.buffer);
+    }
+  }
+
+  async readdir(filepath: string, options?: any): Promise<string[]> {
+    const relativePath = this.toRelativePath(filepath);
+    return await this.adapter.list(relativePath);
+  }
+
+  async mkdir(filepath: string, mode?: number, options?: any): Promise<void> {
+    const relativePath = this.toRelativePath(filepath);
+    await this.adapter.mkdir(relativePath);
+  }
+
+  async rmdir(filepath: string, options?: any): Promise<void> {
+    const relativePath = this.toRelativePath(filepath);
+    await this.adapter.rmdir(relativePath);
+  }
+
+  async stat(filepath: string, options?: any): Promise<{ type: string; mode: number; size: number; ino: number; mtimeMs: number }> {
+    const relativePath = this.toRelativePath(filepath);
+    const exists = await this.adapter.exists(relativePath);
+    if (!exists) {
+      throw new Error(`ENOENT: no such file or directory, stat '${filepath}'`);
+    }
+    const stats = await this.adapter.stat(relativePath);
+    const isDir = await this.adapter.exists(relativePath + "/") || !relativePath.includes(".");
+    return {
+      type: isDir ? "dir" : "file",
+      mode: 0o644,
+      size: stats?.size || 0,
+      ino: 0,
+      mtimeMs: stats?.mtime || Date.now(),
+    };
+  }
+
+  async lstat(filepath: string, options?: any): Promise<{ type: string; mode: number; size: number; ino: number; mtimeMs: number }> {
+    return this.stat(filepath, options);
+  }
+}
 
 interface SimpleGitSettings {
   remoteUrl: string;
@@ -97,8 +168,8 @@ export default class SimpleGitSyncPlugin extends Plugin {
     }
   }
 
-  private getFs() {
-    return this.app.vault.adapter;
+  private getFs(): FsPlugin {
+    return new ObsidianFsAdapter(this.app.vault.adapter, this.getDir());
   }
 
   async doInit() {
