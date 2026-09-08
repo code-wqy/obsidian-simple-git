@@ -1,20 +1,59 @@
-import { App, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, Plugin, PluginSettingTab, Setting, Platform, requestUrl } from "obsidian";
 import git, { GitAuth } from "isomorphic-git";
+
+async function* bufferToAsyncGen(buffer: ArrayBuffer): AsyncGenerator<Uint8Array> {
+  yield new Uint8Array(buffer);
+}
+
+async function collectBody(body: AsyncIterableIterator<Uint8Array> | undefined): Promise<ArrayBuffer | undefined> {
+  if (!body) return undefined;
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of body) {
+    chunks.push(chunk);
+  }
+  if (chunks.length === 0) return undefined;
+  const totalLength = chunks.reduce((sum, c) => sum + c.byteLength, 0);
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result.buffer;
+}
 
 const http = {
   async request({ url, method = "GET", headers = {}, body }: any) {
-    const response = await fetch(url, { method, headers, body });
-    const buffer = await response.arrayBuffer();
-    return {
-      url: response.url,
-      method: response.url ? method : undefined,
-      statusCode: response.status,
-      statusMessage: response.statusText,
-      headers: Object.fromEntries(response.headers.entries()),
-      body: (async function* () {
-        yield new Uint8Array(buffer);
-      })(),
-    };
+    if (Platform.isDesktop) {
+      const bodyBuffer = await collectBody(body);
+      const response = await requestUrl({
+        url,
+        method,
+        headers,
+        body: bodyBuffer,
+        throw: false,
+      });
+      return {
+        url,
+        method,
+        statusCode: response.status,
+        statusMessage: "",
+        headers: response.headers,
+        body: bufferToAsyncGen(response.arrayBuffer),
+      };
+    } else {
+      const fetchBody = body ? await collectBody(body) : undefined;
+      const response = await fetch(url, { method, headers, body: fetchBody });
+      const buffer = await response.arrayBuffer();
+      return {
+        url: response.url,
+        method: response.url ? method : undefined,
+        statusCode: response.status,
+        statusMessage: response.statusText,
+        headers: Object.fromEntries(response.headers.entries()),
+        body: bufferToAsyncGen(buffer),
+      };
+    }
   },
 };
 
