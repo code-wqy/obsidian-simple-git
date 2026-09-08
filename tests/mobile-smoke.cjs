@@ -4,6 +4,8 @@ const Module = require("node:module");
 const git = require("isomorphic-git");
 
 const originalLoad = Module._load;
+const originalBuffer = globalThis.Buffer;
+delete globalThis.Buffer;
 Module._load = function (id, parent, isMain) {
   if (id === "obsidian") {
     return {
@@ -21,8 +23,12 @@ Module._load = function (id, parent, isMain) {
   }
   return originalLoad.call(this, id, parent, isMain);
 };
-const { ObsidianFsAdapter } = require("../dist/main.js");
+const pluginModule = require("../dist/main.js");
+const { ObsidianFsAdapter } = pluginModule;
+const SimpleGitSyncPlugin = pluginModule.default;
 Module._load = originalLoad;
+assert.equal(typeof globalThis.Buffer, "function", "plugin must install Buffer on mobile");
+globalThis.Buffer = originalBuffer;
 
 class MockDataAdapter {
   constructor() {
@@ -179,4 +185,21 @@ test("isomorphic-git can initialize, add, commit, and remove through the adapter
     author: { name: "test", email: "test@example.com" },
   });
   assert.deepEqual(await git.listFiles({ fs, dir }), []);
+});
+
+test("failed first pull removes partial Git metadata so it can be retried", async () => {
+  const dataAdapter = new MockDataAdapter();
+  const plugin = new SimpleGitSyncPlugin();
+  plugin.app = { vault: { adapter: dataAdapter } };
+  plugin.settings = {
+    remoteUrl: "https://example.invalid/vault.git",
+    username: "test",
+    token: "token",
+    autoPullOnOpen: false,
+    autoPullInterval: 0,
+    language: "en",
+  };
+
+  await assert.rejects(plugin.cloneIntoVault());
+  assert.equal(await dataAdapter.exists(".git"), false);
 });

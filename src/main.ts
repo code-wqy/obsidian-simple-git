@@ -1,5 +1,12 @@
 import { App, Menu, Modal, Notice, Plugin, PluginSettingTab, Setting, Platform, requestUrl } from "obsidian";
+import { Buffer as BufferPolyfill } from "buffer";
 import git, { GitAuth } from "isomorphic-git";
+
+// isomorphic-git still references the Node-style global in several runtime
+// paths. Obsidian Mobile does not provide it, even when the module is bundled.
+if (typeof globalThis.Buffer === "undefined") {
+  globalThis.Buffer = BufferPolyfill;
+}
 
 type Lang = "en" | "zh";
 
@@ -7,8 +14,6 @@ interface Strings {
   menuPull: string;
   menuForcePull: string;
   menuCommitPush: string;
-  menuInit: string;
-  menuClone: string;
   confirmForcePullTitle: string;
   confirmForcePullMessage: string;
   confirmCancel: string;
@@ -20,14 +25,7 @@ interface Strings {
   noticeNothingToCommit: string;
   noticeCommitPushOk: (n: number) => string;
   noticeCommitPushFail: (m: string) => string;
-  noticeInitOk: string;
-  noticeInitFail: (m: string) => string;
-  cloneTitle: string;
-  cloneMessage: (vault: string) => string;
-  cloneConfirm: string;
   noticeCloneOk: string;
-  noticeCloneFail: (m: string) => string;
-  noticeRepoExists: string;
   noticeRepoMissing: string;
   noticeNoRemote: string;
   noticeLoadFail: (m: string) => string;
@@ -51,8 +49,6 @@ const STRINGS: Record<Lang, Strings> = {
     menuPull: "Pull",
     menuForcePull: "Force pull (discard local changes)",
     menuCommitPush: "Commit all and push",
-    menuInit: "Initialize repository",
-    menuClone: "Clone remote into this vault",
     confirmForcePullTitle: "Force pull",
     confirmForcePullMessage:
       "This will discard ALL local uncommitted changes and reset the vault to the remote state. Unsynced edits will be lost. Continue?",
@@ -65,16 +61,8 @@ const STRINGS: Record<Lang, Strings> = {
     noticeNothingToCommit: "Simple Git: Nothing to commit",
     noticeCommitPushOk: (n) => `Simple Git: Committed ${n} file(s) and pushed`,
     noticeCommitPushFail: (m) => `Simple Git: Commit/Push failed - ${m}`,
-    noticeInitOk: "Simple Git: Repository initialized",
-    noticeInitFail: (m) => `Simple Git: Init failed - ${m} (check console for details)`,
-    cloneTitle: "Clone remote repository",
-    cloneMessage: (vault) =>
-      `Remote files will be cloned directly into the current vault “${vault}”. Existing files are not overwritten: cloning stops if a remote file conflicts with a local file. Continue?`,
-    cloneConfirm: "Clone into vault",
-    noticeCloneOk: "Simple Git: Clone successful. Restart Obsidian to refresh the vault.",
-    noticeCloneFail: (m) => `Simple Git: Clone failed - ${m}`,
-    noticeRepoExists: "This vault already contains a Git repository.",
-    noticeRepoMissing: "This vault is not a Git repository. Clone or initialize it first.",
+    noticeCloneOk: "Simple Git: Repository initialized and pulled. Restart Obsidian to refresh the vault.",
+    noticeRepoMissing: "This vault is not initialized. Run Pull first.",
     noticeNoRemote: "Remote URL not set. Please configure in plugin settings.",
     noticeLoadFail: (m) => `Simple Git: Failed to load - ${m}`,
     settingsTitle: "Simple Git Sync Settings",
@@ -95,8 +83,6 @@ const STRINGS: Record<Lang, Strings> = {
     menuPull: "拉取",
     menuForcePull: "强制拉取（丢弃本地修改）",
     menuCommitPush: "提交全部并推送",
-    menuInit: "初始化仓库",
-    menuClone: "克隆远端到当前仓库",
     confirmForcePullTitle: "强制拉取",
     confirmForcePullMessage:
       "将丢弃所有未提交的本地修改，把仓库重置为远程状态。未同步的改动会丢失。确定继续吗？",
@@ -109,16 +95,8 @@ const STRINGS: Record<Lang, Strings> = {
     noticeNothingToCommit: "Simple Git：没有可提交的内容",
     noticeCommitPushOk: (n) => `Simple Git：已提交 ${n} 个文件并推送`,
     noticeCommitPushFail: (m) => `Simple Git：提交/推送失败 - ${m}`,
-    noticeInitOk: "Simple Git：仓库初始化完成",
-    noticeInitFail: (m) => `Simple Git：初始化失败 - ${m}（详情见控制台）`,
-    cloneTitle: "克隆远端仓库",
-    cloneMessage: (vault) =>
-      `远端文件将直接克隆到当前已选择的仓库“${vault}”根目录。不会覆盖同名本地文件；如有冲突，克隆会停止。是否继续？`,
-    cloneConfirm: "克隆到当前仓库",
-    noticeCloneOk: "Simple Git：克隆成功。请重启 Obsidian 以刷新仓库。",
-    noticeCloneFail: (m) => `Simple Git：克隆失败 - ${m}`,
-    noticeRepoExists: "当前仓库中已经存在 Git 仓库。",
-    noticeRepoMissing: "当前仓库还不是 Git 仓库，请先克隆或初始化。",
+    noticeCloneOk: "Simple Git：已自动初始化并拉取。请重启 Obsidian 以刷新仓库。",
+    noticeRepoMissing: "当前仓库尚未初始化，请先执行拉取。",
     noticeNoRemote: "尚未设置远程仓库地址，请在插件设置中配置。",
     noticeLoadFail: (m) => `Simple Git：加载失败 - ${m}`,
     settingsTitle: "Simple Git Sync 设置",
@@ -364,18 +342,6 @@ export default class SimpleGitSyncPlugin extends Plugin {
       callback: () => this.doCommitPush(),
     });
 
-    this.addCommand({
-      id: "simple-git-init",
-      name: "Initialize git repository",
-      callback: () => this.doInit(),
-    });
-
-    this.addCommand({
-      id: "simple-git-clone",
-      name: "Clone remote repository into current vault",
-      callback: () => this.doClone(),
-    });
-
     this.addSettingTab(new SimpleGitSettingTab(this.app, this));
 
     if (this.settings.autoPullOnOpen) {
@@ -444,25 +410,19 @@ export default class SimpleGitSyncPlugin extends Plugin {
     return new ObsidianFsAdapter(this.app.vault.adapter);
   }
 
-  async doInit() {
+  private async hasUsableRepository(): Promise<boolean> {
+    if (!await this.app.vault.adapter.exists(".git")) return false;
     try {
-      const fs = this.getFs();
-      const dir = this.getDir();
-      console.log("Simple Git: Initializing...", { dir, hasFs: !!fs, hasPromises: !!fs.promises });
-      await git.init({ fs, dir, defaultBranch: "main" });
-      
-      // Set default git config
-      const username = this.settings.username || "user";
-      await git.setConfig({ fs, dir, path: "user.name", value: username });
-      await git.setConfig({ fs, dir, path: "user.email", value: `${username}@local` });
-      if (this.settings.remoteUrl) {
-        await this.ensureRemote();
-      }
-      
-      new Notice(this.strings.noticeInitOk);
-    } catch (e: any) {
-      console.error("Simple Git Init Error:", e);
-      new Notice(this.strings.noticeInitFail(e.message));
+      await git.resolveRef({ fs: this.getFs(), dir: this.getDir(), ref: "HEAD" });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async removeGitDirectory(): Promise<void> {
+    if (await this.app.vault.adapter.exists(".git")) {
+      await this.app.vault.adapter.rmdir(".git", true);
     }
   }
 
@@ -485,43 +445,21 @@ export default class SimpleGitSyncPlugin extends Plugin {
         .setIcon("upload")
         .onClick(() => this.doCommitPush())
     );
-    menu.addSeparator();
-    menu.addItem((item) =>
-      item
-        .setTitle(s.menuInit)
-        .setIcon("git-branch")
-        .onClick(() => this.doInit())
-    );
-    menu.addItem((item) =>
-      item
-        .setTitle(s.menuClone)
-        .setIcon("copy")
-        .onClick(() => this.doClone())
-    );
     menu.showAtMouseEvent(evt);
   }
 
-  doClone() {
-    const s = this.strings;
-    new ConfirmModal(
-      this.app,
-      s.cloneTitle,
-      s.cloneMessage(this.app.vault.getName()),
-      s.confirmCancel,
-      s.cloneConfirm,
-      () => this.runClone()
-    ).open();
-  }
+  private async cloneIntoVault(): Promise<void> {
+    if (!this.settings.remoteUrl) {
+      throw new Error(this.strings.noticeNoRemote);
+    }
 
-  private async runClone() {
+    // A failed mobile clone may leave an initialized but unusable .git folder.
+    // Pull is the recovery entry point, so remove only metadata with no HEAD.
+    if (await this.app.vault.adapter.exists(".git")) {
+      await this.removeGitDirectory();
+    }
+
     try {
-      if (!this.settings.remoteUrl) {
-        throw new Error(this.strings.noticeNoRemote);
-      }
-      if (await this.app.vault.adapter.exists(".git")) {
-        throw new Error(this.strings.noticeRepoExists);
-      }
-
       const fs = this.getFs();
       const dir = this.getDir();
       await git.clone({
@@ -539,16 +477,25 @@ export default class SimpleGitSyncPlugin extends Plugin {
       const username = this.settings.username || "user";
       await git.setConfig({ fs, dir, path: "user.name", value: username });
       await git.setConfig({ fs, dir, path: "user.email", value: `${username}@local` });
-      new Notice(this.strings.noticeCloneOk, 10000);
-    } catch (e: any) {
-      console.error("Simple Git Clone Error:", e);
-      new Notice(this.strings.noticeCloneFail(e.message));
+    } catch (error) {
+      // isomorphic-git normally cleans this up itself, but Capacitor failures
+      // can interrupt that cleanup. Ensure the next Pull can retry cleanly.
+      try {
+        await this.removeGitDirectory();
+      } catch (cleanupError) {
+        console.error("Simple Git clone cleanup failed:", cleanupError);
+      }
+      throw error;
     }
   }
 
   async doPull() {
     try {
-      await this.ensureRepository();
+      if (!await this.hasUsableRepository()) {
+        await this.cloneIntoVault();
+        new Notice(this.strings.noticeCloneOk, 10000);
+        return;
+      }
       await this.ensureRemote();
       await git.pull({
         fs: this.getFs(),
