@@ -1,12 +1,12 @@
-import { App, Menu, Modal, Notice, Plugin, PluginSettingTab, Setting, Platform, requestUrl } from "obsidian";
+import { App, ItemView, Menu, Modal, Notice, Plugin, PluginSettingTab, Setting, Platform, WorkspaceLeaf, requestUrl } from "obsidian";
 import { Buffer as BufferPolyfill } from "buffer";
 import git, { GitAuth } from "isomorphic-git";
 
-// isomorphic-git still references the Node-style global in several runtime
-// paths. Obsidian Mobile does not provide it, even when the module is bundled.
 if (typeof globalThis.Buffer === "undefined") {
   globalThis.Buffer = BufferPolyfill;
 }
+
+const VIEW_TYPE = "simple-git-view";
 
 type Lang = "en" | "zh";
 
@@ -14,6 +14,7 @@ interface Strings {
   menuPull: string;
   menuForcePull: string;
   menuCommitPush: string;
+  menuSourceControl: string;
   confirmForcePullTitle: string;
   confirmForcePullMessage: string;
   confirmCancel: string;
@@ -42,6 +43,33 @@ interface Strings {
   settingAutoPullOnOpenDesc: string;
   settingAutoPullInterval: string;
   settingAutoPullIntervalDesc: string;
+  viewTitle: string;
+  viewRefresh: string;
+  viewCommit: string;
+  viewCommitPush: string;
+  viewNoChanges: string;
+  viewCommitPlaceholder: string;
+  viewModified: string;
+  viewAdded: string;
+  viewDeleted: string;
+  viewScanning: string;
+  viewCommitting: string;
+  viewRebuildIndex: string;
+  viewIndexCorrupt: string;
+  viewUnstagedChanges: string;
+  viewStagedChanges: string;
+  viewSelectAll: string;
+  viewStageSelected: string;
+  viewUnstageSelected: string;
+  viewStage: string;
+  viewUnstage: string;
+  viewNothingStaged: string;
+  noticeRebuildIndexOk: string;
+  noticeRebuildIndexFail: (m: string) => string;
+  noticeNothingStaged: string;
+  menuRebuildIndex: string;
+  settingDefaultCommitMessage: string;
+  settingDefaultCommitMessageDesc: string;
 }
 
 const STRINGS: Record<Lang, Strings> = {
@@ -49,6 +77,7 @@ const STRINGS: Record<Lang, Strings> = {
     menuPull: "Pull",
     menuForcePull: "Force pull (discard local changes)",
     menuCommitPush: "Commit all and push",
+    menuSourceControl: "Source Control",
     confirmForcePullTitle: "Force pull",
     confirmForcePullMessage:
       "This will discard ALL local uncommitted changes and reset the vault to the remote state. Unsynced edits will be lost. Continue?",
@@ -66,7 +95,7 @@ const STRINGS: Record<Lang, Strings> = {
     noticeNoRemote: "Remote URL not set. Please configure in plugin settings.",
     noticeLoadFail: (m) => `Simple Git: Failed to load - ${m}`,
     settingsTitle: "Simple Git Sync Settings",
-    settingLanguage: "Language / 语言",
+    settingLanguage: "Language",
     settingLanguageDesc: "UI language for this plugin",
     settingRemoteUrl: "Remote URL",
     settingRemoteUrlDesc: "HTTPS URL of your GitHub repository",
@@ -78,40 +107,95 @@ const STRINGS: Record<Lang, Strings> = {
     settingAutoPullOnOpenDesc: "Automatically pull when vault opens",
     settingAutoPullInterval: "Auto pull interval (minutes)",
     settingAutoPullIntervalDesc: "0 = disabled. Pull automatically at this interval.",
+    viewTitle: "Source Control",
+    viewRefresh: "Refresh",
+    viewCommit: "Commit",
+    viewCommitPush: "Commit & Push",
+    viewNoChanges: "No changes detected",
+    viewCommitPlaceholder: "Commit message (optional)",
+    viewModified: "Modified",
+    viewAdded: "Added",
+    viewDeleted: "Deleted",
+    viewScanning: "Scanning for changes...",
+    viewCommitting: "Committing and pushing...",
+    viewRebuildIndex: "Rebuild index",
+    viewIndexCorrupt: "Git index is corrupted. Click below to rebuild.",
+    viewUnstagedChanges: "Unstaged Changes",
+    viewStagedChanges: "Staged Changes",
+    viewSelectAll: "Select All",
+    viewStageSelected: "Stage",
+    viewUnstageSelected: "Unstage",
+    viewStage: "Stage",
+    viewUnstage: "Unstage",
+    viewNothingStaged: "No files staged",
+    noticeRebuildIndexOk: "Simple Git: Index rebuilt successfully",
+    noticeRebuildIndexFail: (m) => `Simple Git: Rebuild index failed - ${m}`,
+    noticeNothingStaged: "Simple Git: No files staged. Stage files first.",
+    menuRebuildIndex: "Rebuild git index",
+    settingDefaultCommitMessage: "Default commit message",
+    settingDefaultCommitMessageDesc: "Default message used when committing. Can be overridden in the sidebar.",
   },
   zh: {
-    menuPull: "拉取",
-    menuForcePull: "强制拉取（丢弃本地修改）",
-    menuCommitPush: "提交全部并推送",
-    confirmForcePullTitle: "强制拉取",
+    menuPull: "\u62c9\u53d6",
+    menuForcePull: "\u5f3a\u5236\u62c9\u53d6\uff08\u4e22\u5f03\u672c\u5730\u4fee\u6539\uff09",
+    menuCommitPush: "\u63d0\u4ea4\u5168\u90e8\u5e76\u63a8\u9001",
+    menuSourceControl: "\u6e90\u4ee3\u7801\u7ba1\u7406",
+    confirmForcePullTitle: "\u5f3a\u5236\u62c9\u53d6",
     confirmForcePullMessage:
-      "将丢弃所有未提交的本地修改，把仓库重置为远程状态。未同步的改动会丢失。确定继续吗？",
-    confirmCancel: "取消",
-    confirmDiscardAndPull: "丢弃并拉取",
-    noticePullOk: "Simple Git：拉取成功",
-    noticePullFail: (m) => `Simple Git：拉取失败 - ${m}`,
-    noticeForcePullOk: (b) => `Simple Git：已强制拉取（重置到 origin/${b}）`,
-    noticeForcePullFail: (m) => `Simple Git：强制拉取失败 - ${m}`,
-    noticeNothingToCommit: "Simple Git：没有可提交的内容",
-    noticeCommitPushOk: (n) => `Simple Git：已提交 ${n} 个文件并推送`,
-    noticeCommitPushFail: (m) => `Simple Git：提交/推送失败 - ${m}`,
-    noticeCloneOk: "Simple Git：已自动初始化并拉取。请重启 Obsidian 以刷新仓库。",
-    noticeRepoMissing: "当前仓库尚未初始化，请先执行拉取。",
-    noticeNoRemote: "尚未设置远程仓库地址，请在插件设置中配置。",
-    noticeLoadFail: (m) => `Simple Git：加载失败 - ${m}`,
-    settingsTitle: "Simple Git Sync 设置",
-    settingLanguage: "语言 / Language",
-    settingLanguageDesc: "插件界面显示语言",
-    settingRemoteUrl: "远程仓库地址",
-    settingRemoteUrlDesc: "GitHub 仓库的 HTTPS 地址",
-    settingUsername: "用户名",
-    settingUsernameDesc: "你的 GitHub 用户名",
-    settingToken: "令牌 / 密码",
-    settingTokenDesc: "GitHub 个人访问令牌（PAT）",
-    settingAutoPullOnOpen: "打开时自动拉取",
-    settingAutoPullOnOpenDesc: "打开仓库时自动执行拉取",
-    settingAutoPullInterval: "自动拉取间隔（分钟）",
-    settingAutoPullIntervalDesc: "0 = 关闭。按此间隔自动拉取。",
+      "\u5c06\u4e22\u5f03\u6240\u6709\u672a\u63d0\u4ea4\u7684\u672c\u5730\u4fee\u6539\uff0c\u628a\u4ed3\u5e93\u91cd\u7f6e\u4e3a\u8fdc\u7a0b\u72b6\u6001\u3002\u672a\u540c\u6b65\u7684\u6539\u52a8\u4f1a\u4e22\u5931\u3002\u786e\u5b9a\u7ee7\u7eed\u5417\uff1f",
+    confirmCancel: "\u53d6\u6d88",
+    confirmDiscardAndPull: "\u4e22\u5f03\u5e76\u62c9\u53d6",
+    noticePullOk: "Simple Git\uff1a\u62c9\u53d6\u6210\u529f",
+    noticePullFail: (m) => `Simple Git\uff1a\u62c9\u53d6\u5931\u8d25 - ${m}`,
+    noticeForcePullOk: (b) => `Simple Git\uff1a\u5df2\u5f3a\u5236\u62c9\u53d6\uff08\u91cd\u7f6e\u5230 origin/${b}\uff09`,
+    noticeForcePullFail: (m) => `Simple Git\uff1a\u5f3a\u5236\u62c9\u53d6\u5931\u8d25 - ${m}`,
+    noticeNothingToCommit: "Simple Git\uff1a\u6ca1\u6709\u53ef\u63d0\u4ea4\u7684\u5185\u5bb9",
+    noticeCommitPushOk: (n) => `Simple Git\uff1a\u5df2\u63d0\u4ea4 ${n} \u4e2a\u6587\u4ef6\u5e76\u63a8\u9001`,
+    noticeCommitPushFail: (m) => `Simple Git\uff1a\u63d0\u4ea4/\u63a8\u9001\u5931\u8d25 - ${m}`,
+    noticeCloneOk: "Simple Git\uff1a\u5df2\u81ea\u52a8\u521d\u59cb\u5316\u5e76\u62c9\u53d6\u3002\u8bf7\u91cd\u542f Obsidian \u4ee5\u5237\u65b0\u4ed3\u5e93\u3002",
+    noticeRepoMissing: "\u5f53\u524d\u4ed3\u5e93\u5c1a\u672a\u521d\u59cb\u5316\uff0c\u8bf7\u5148\u6267\u884c\u62c9\u53d6\u3002",
+    noticeNoRemote: "\u5c1a\u672a\u8bbe\u7f6e\u8fdc\u7a0b\u4ed3\u5e93\u5730\u5740\uff0c\u8bf7\u5728\u63d2\u4ef6\u8bbe\u7f6e\u4e2d\u914d\u7f6e\u3002",
+    noticeLoadFail: (m) => `Simple Git\uff1a\u52a0\u8f7d\u5931\u8d25 - ${m}`,
+    settingsTitle: "Simple Git Sync \u8bbe\u7f6e",
+    settingLanguage: "\u8bed\u8a00",
+    settingLanguageDesc: "\u63d2\u4ef6\u754c\u9762\u663e\u793a\u8bed\u8a00",
+    settingRemoteUrl: "\u8fdc\u7a0b\u4ed3\u5e93\u5730\u5740",
+    settingRemoteUrlDesc: "GitHub \u4ed3\u5e93\u7684 HTTPS \u5730\u5740",
+    settingUsername: "\u7528\u6237\u540d",
+    settingUsernameDesc: "\u4f60\u7684 GitHub \u7528\u6237\u540d",
+    settingToken: "\u4ee4\u724c / \u5bc6\u7801",
+    settingTokenDesc: "GitHub \u4e2a\u4eba\u8bbf\u95ee\u4ee4\u724c\uff08PAT\uff09",
+    settingAutoPullOnOpen: "\u6253\u5f00\u65f6\u81ea\u52a8\u62c9\u53d6",
+    settingAutoPullOnOpenDesc: "\u6253\u5f00\u4ed3\u5e93\u65f6\u81ea\u52a8\u6267\u884c\u62c9\u53d6",
+    settingAutoPullInterval: "\u81ea\u52a8\u62c9\u53d6\u95f4\u9694\uff08\u5206\u949f\uff09",
+    settingAutoPullIntervalDesc: "0 = \u5173\u95ed\u3002\u6309\u6b64\u95f4\u9694\u81ea\u52a8\u62c9\u53d6\u3002",
+    viewTitle: "\u6e90\u4ee3\u7801\u7ba1\u7406",
+    viewRefresh: "\u5237\u65b0",
+    viewCommit: "\u63d0\u4ea4",
+    viewCommitPush: "\u63d0\u4ea4\u5e76\u63a8\u9001",
+    viewNoChanges: "\u672a\u68c0\u6d4b\u5230\u6539\u52a8",
+    viewCommitPlaceholder: "\u63d0\u4ea4\u4fe1\u606f\uff08\u53ef\u9009\uff09",
+    viewModified: "\u5df2\u4fee\u6539",
+    viewAdded: "\u5df2\u6dfb\u52a0",
+    viewDeleted: "\u5df2\u5220\u9664",
+    viewScanning: "\u6b63\u5728\u626b\u63cf\u6539\u52a8...",
+    viewCommitting: "\u6b63\u5728\u63d0\u4ea4\u5e76\u63a8\u9001...",
+    viewRebuildIndex: "\u91cd\u5efa\u7d22\u5f15",
+    viewIndexCorrupt: "Git \u7d22\u5f15\u5df2\u635f\u574f\uff0c\u70b9\u51fb\u4e0b\u65b9\u91cd\u5efa\u3002",
+    viewUnstagedChanges: "\u672a\u6682\u5b58\u7684\u66f4\u6539",
+    viewStagedChanges: "\u5df2\u6682\u5b58\u7684\u66f4\u6539",
+    viewSelectAll: "\u5168\u9009",
+    viewStageSelected: "\u6682\u5b58",
+    viewUnstageSelected: "\u53d6\u6d88\u6682\u5b58",
+    viewStage: "\u6682\u5b58",
+    viewUnstage: "\u53d6\u6d88\u6682\u5b58",
+    viewNothingStaged: "\u6ca1\u6709\u5df2\u6682\u5b58\u7684\u6587\u4ef6",
+    noticeRebuildIndexOk: "Simple Git\uff1a\u7d22\u5f15\u5df2\u91cd\u5efa",
+    noticeRebuildIndexFail: (m) => `Simple Git\uff1a\u91cd\u5efa\u7d22\u5f15\u5931\u8d25 - ${m}`,
+    noticeNothingStaged: "Simple Git\uff1a\u6ca1\u6709\u5df2\u6682\u5b58\u7684\u6587\u4ef6\uff0c\u8bf7\u5148\u6682\u5b58\u6587\u4ef6\u3002",
+    menuRebuildIndex: "\u91cd\u5efa git \u7d22\u5f15",
+    settingDefaultCommitMessage: "\u9ed8\u8ba4\u63d0\u4ea4\u4fe1\u606f",
+    settingDefaultCommitMessageDesc: "\u63d0\u4ea4\u65f6\u7684\u9ed8\u8ba4\u4fe1\u606f\uff0c\u53ef\u5728\u4fa7\u680f\u4fee\u6539",
   },
 };
 
@@ -241,7 +325,7 @@ export class ObsidianFsAdapter {
         }
         const exists = await this.adapter.exists(relativePath);
         if (!exists) {
-          const err: any = new Error(`ENOENT: no such file or directory, stat '${filepath}'`);
+          const err: any = new Error("ENOENT: no such file or directory");
           err.code = "ENOENT";
           throw err;
         }
@@ -299,6 +383,7 @@ interface SimpleGitSettings {
   autoPullOnOpen: boolean;
   autoPullInterval: number;
   language: Lang;
+  defaultCommitMessage: string;
 }
 
 const DEFAULT_SETTINGS: SimpleGitSettings = {
@@ -308,11 +393,19 @@ const DEFAULT_SETTINGS: SimpleGitSettings = {
   autoPullOnOpen: false,
   autoPullInterval: 0,
   language: "en",
+  defaultCommitMessage: "vault backup",
 };
+
+export interface ChangedFile {
+  path: string;
+  status: "modified" | "added" | "deleted";
+  staged: boolean;
+}
 
 export default class SimpleGitSyncPlugin extends Plugin {
   settings: SimpleGitSettings;
   private autoPullTimer: number | null = null;
+  stagedFiles: Set<string> = new Set();
 
   get strings(): Strings {
     return STRINGS[this.settings.language] || STRINGS.en;
@@ -322,43 +415,51 @@ export default class SimpleGitSyncPlugin extends Plugin {
     try {
       await this.loadSettings();
 
+      this.registerView(VIEW_TYPE, (leaf) => new SimpleGitView(leaf, this));
+
       this.addRibbonIcon("git-branch", "Simple Git Sync", (evt) => this.showSyncMenu(evt));
 
-    this.addCommand({
-      id: "simple-git-pull",
-      name: "Pull from remote",
-      callback: () => this.doPull(),
-    });
+      this.addCommand({
+        id: "simple-git-pull",
+        name: "Pull from remote",
+        callback: () => this.doPull(),
+      });
 
-    this.addCommand({
-      id: "simple-git-force-pull",
-      name: "Force pull (discard local changes)",
-      callback: () => this.doForcePull(),
-    });
+      this.addCommand({
+        id: "simple-git-force-pull",
+        name: "Force pull (discard local changes)",
+        callback: () => this.doForcePull(),
+      });
 
-    this.addCommand({
-      id: "simple-git-commit-push",
-      name: "Commit all and push",
-      callback: () => this.doCommitPush(),
-    });
+      this.addCommand({
+        id: "simple-git-commit-push",
+        name: "Commit all and push",
+        callback: () => this.doCommitPush(),
+      });
 
-    this.addSettingTab(new SimpleGitSettingTab(this.app, this));
+      this.addCommand({
+        id: "simple-git-source-control",
+        name: "Open source control view",
+        callback: () => this.activateView(),
+      });
 
-    if (this.settings.autoPullOnOpen) {
-      this.registerEvent(
-        this.app.workspace.on("layout-change", () => {
-          this.doPull();
-        })
-      );
-    }
+      this.addSettingTab(new SimpleGitSettingTab(this.app, this));
 
-    if (this.settings.autoPullInterval > 0) {
-      this.autoPullTimer = window.setInterval(
-        () => this.doPull(),
-        this.settings.autoPullInterval * 60 * 1000
-      );
-      this.registerInterval(this.autoPullTimer);
-    }
+      if (this.settings.autoPullOnOpen) {
+        this.registerEvent(
+          this.app.workspace.on("layout-change", () => {
+            this.doPull();
+          })
+        );
+      }
+
+      if (this.settings.autoPullInterval > 0) {
+        this.autoPullTimer = window.setInterval(
+          () => this.doPull(),
+          this.settings.autoPullInterval * 60 * 1000
+        );
+        this.registerInterval(this.autoPullTimer);
+      }
     } catch (e) {
       console.error("Simple Git Sync: Failed to load plugin", e);
       new Notice(STRINGS.en.noticeLoadFail((e as Error).message));
@@ -371,9 +472,24 @@ export default class SimpleGitSyncPlugin extends Plugin {
     }
   }
 
+  async activateView() {
+    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE);
+    if (existing.length > 0) {
+      this.app.workspace.revealLeaf(existing[0]);
+      return;
+    }
+
+    const leaf = Platform.isMobile
+      ? this.app.workspace.getLeftLeaf(false)
+      : this.app.workspace.getRightLeaf(false);
+
+    if (leaf) {
+      await leaf.setViewState({ type: VIEW_TYPE, active: true });
+      this.app.workspace.revealLeaf(leaf);
+    }
+  }
+
   private getDir(): string {
-    // Obsidian's DataAdapter is rooted at the currently selected vault on
-    // mobile. isomorphic-git uses this virtual root and never reaches outside.
     return "/";
   }
 
@@ -426,6 +542,54 @@ export default class SimpleGitSyncPlugin extends Plugin {
     }
   }
 
+  async getChangedFiles(): Promise<ChangedFile[]> {
+    const status = await git.statusMatrix({
+      fs: this.getFs(),
+      dir: this.getDir(),
+    });
+
+    const changed: ChangedFile[] = [];
+    for (const [filepath, head, workdir] of status) {
+      if (head === workdir) continue;
+      let statusType: "modified" | "added" | "deleted";
+      if (head === 0) {
+        statusType = "added";
+      } else if (workdir === 0) {
+        statusType = "deleted";
+      } else {
+        statusType = "modified";
+      }
+      changed.push({ path: filepath, status: statusType, staged: this.stagedFiles.has(filepath) });
+    }
+    return changed;
+  }
+
+  async stageFile(filepath: string) {
+    const fs = this.getFs();
+    const dir = this.getDir();
+    await git.add({ fs, dir, filepath });
+    this.stagedFiles.add(filepath);
+  }
+
+  async unstageFile(filepath: string) {
+    const fs = this.getFs();
+    const dir = this.getDir();
+    await git.remove({ fs, dir, filepath });
+    this.stagedFiles.delete(filepath);
+  }
+
+  async stageAll(files: ChangedFile[]) {
+    for (const f of files) {
+      await this.stageFile(f.path);
+    }
+  }
+
+  async unstageAll(files: ChangedFile[]) {
+    for (const f of files) {
+      await this.unstageFile(f.path);
+    }
+  }
+
   private showSyncMenu(evt: MouseEvent) {
     const s = this.strings;
     const menu = new Menu();
@@ -441,9 +605,22 @@ export default class SimpleGitSyncPlugin extends Plugin {
     menu.addSeparator();
     menu.addItem((item) =>
       item
+        .setTitle(s.menuSourceControl)
+        .setIcon("git-commit")
+        .onClick(() => this.activateView())
+    );
+    menu.addItem((item) =>
+      item
         .setTitle(s.menuCommitPush)
         .setIcon("upload")
         .onClick(() => this.doCommitPush())
+    );
+    menu.addSeparator();
+    menu.addItem((item) =>
+      item
+        .setTitle(s.menuRebuildIndex)
+        .setIcon("wrench")
+        .onClick(() => this.rebuildIndex())
     );
     menu.showAtMouseEvent(evt);
   }
@@ -453,8 +630,6 @@ export default class SimpleGitSyncPlugin extends Plugin {
       throw new Error(this.strings.noticeNoRemote);
     }
 
-    // A failed mobile clone may leave an initialized but unusable .git folder.
-    // Pull is the recovery entry point, so remove only metadata with no HEAD.
     if (await this.app.vault.adapter.exists(".git")) {
       await this.removeGitDirectory();
     }
@@ -478,8 +653,6 @@ export default class SimpleGitSyncPlugin extends Plugin {
       await git.setConfig({ fs, dir, path: "user.name", value: username });
       await git.setConfig({ fs, dir, path: "user.email", value: `${username}@local` });
     } catch (error) {
-      // isomorphic-git normally cleans this up itself, but Capacitor failures
-      // can interrupt that cleanup. Ensure the next Pull can retry cleanly.
       try {
         await this.removeGitDirectory();
       } catch (cleanupError) {
@@ -553,18 +726,7 @@ export default class SimpleGitSyncPlugin extends Plugin {
       await this.ensureRepository();
       await this.ensureRemote();
 
-      const status = await git.statusMatrix({
-        fs: this.getFs(),
-        dir: this.getDir(),
-        filepaths: ["."],
-      });
-
-      const changedFiles: string[] = [];
-      for (const [filepath, head, workdir, stage] of status) {
-        if (head !== workdir || head !== stage) {
-          changedFiles.push(filepath);
-        }
-      }
+      const changedFiles = await this.getChangedFiles();
 
       if (changedFiles.length === 0) {
         new Notice(this.strings.noticeNothingToCommit);
@@ -573,12 +735,12 @@ export default class SimpleGitSyncPlugin extends Plugin {
 
       const fs = this.getFs();
       const dir = this.getDir();
-      for (const [filepath, , workdir, stage] of status) {
-        if (workdir === stage) continue;
-        if (workdir === 0) {
-          await git.remove({ fs, dir, filepath });
+
+      for (const file of changedFiles) {
+        if (file.status === "deleted") {
+          await git.remove({ fs, dir, filepath: file.path });
         } else {
-          await git.add({ fs, dir, filepath });
+          await git.add({ fs, dir, filepath: file.path });
         }
       }
 
@@ -608,12 +770,309 @@ export default class SimpleGitSyncPlugin extends Plugin {
     }
   }
 
+  async doCommitPushWithMessage(message: string) {
+    try {
+      await this.ensureRepository();
+      await this.ensureRemote();
+
+      const stagedFiles = Array.from(this.stagedFiles);
+
+      if (stagedFiles.length === 0) {
+        new Notice(this.strings.noticeNothingStaged);
+        return;
+      }
+
+      const fs = this.getFs();
+      const dir = this.getDir();
+
+      const commitMessage = message.trim() || this.settings.defaultCommitMessage || (() => {
+        const now = new Date();
+        return `vault backup: ${now.toISOString().replace("T", " ").slice(0, 19)}`;
+      })();
+
+      await git.commit({
+        fs,
+        dir,
+        message: commitMessage,
+        author: {
+          name: this.settings.username || "user",
+          email: "user@local",
+        },
+      });
+
+      await git.push({
+        fs,
+        http,
+        dir,
+        onAuth: () => this.getAuth(),
+      });
+
+      this.stagedFiles.clear();
+      new Notice(this.strings.noticeCommitPushOk(stagedFiles.length));
+    } catch (e: any) {
+      console.error("Simple Git Commit/Push Error:", e);
+      new Notice(this.strings.noticeCommitPushFail(e.message));
+    }
+  }
+
+  async rebuildIndex() {
+    try {
+      await this.ensureRepository();
+      const indexPath = ".git/index";
+      if (await this.app.vault.adapter.exists(indexPath)) {
+        await this.app.vault.adapter.remove(indexPath);
+      }
+      new Notice(this.strings.noticeRebuildIndexOk);
+    } catch (e: any) {
+      console.error("Simple Git Rebuild Index Error:", e);
+      new Notice(this.strings.noticeRebuildIndexFail(e.message));
+    }
+  }
+
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
   }
 
   async saveSettings() {
     await this.saveData(this.settings);
+  }
+}
+
+class SimpleGitView extends ItemView {
+  private plugin: SimpleGitSyncPlugin;
+  private unstagedListEl: HTMLElement;
+  private stagedListEl: HTMLElement;
+  private selectUnstagedBtnEl: HTMLButtonElement;
+  private stageBtnEl: HTMLButtonElement;
+  private selectStagedBtnEl: HTMLButtonElement;
+  private unstageBtnEl: HTMLButtonElement;
+  private commitInputEl: HTMLTextAreaElement;
+  private commitBtnEl: HTMLButtonElement;
+  private refreshBtnEl: HTMLButtonElement;
+  private errorEl: HTMLElement;
+  private selectedFiles: Set<string> = new Set();
+
+  constructor(leaf: WorkspaceLeaf, plugin: SimpleGitSyncPlugin) {
+    super(leaf);
+    this.plugin = plugin;
+  }
+
+  getViewType(): string {
+    return VIEW_TYPE;
+  }
+
+  getDisplayText(): string {
+    return this.plugin.strings.viewTitle;
+  }
+
+  getIcon(): string {
+    return "git-commit";
+  }
+
+  async onOpen() {
+    const container = this.containerEl.children[1];
+    container.empty();
+    container.classList.add("simple-git-view");
+
+    const header = container.createDiv("simple-git-header");
+    header.createEl("h4", { text: this.plugin.strings.viewTitle });
+
+    const headerActions = header.createDiv("simple-git-header-actions");
+    this.refreshBtnEl = headerActions.createEl("button", { cls: "simple-git-btn" });
+    this.refreshBtnEl.innerHTML = '<svg viewBox="0 0 100 100" width="16" height="16"><path d="M50 10a40 40 0 1 0 40 40h-10a30 30 0 1 1-30-30v20l30-25-30-25v20z" fill="currentColor"/></svg>';
+    this.refreshBtnEl.title = this.plugin.strings.viewRefresh;
+    this.refreshBtnEl.onclick = () => this.refresh();
+
+    const body = container.createDiv("simple-git-body");
+
+    const unstagedSection = body.createDiv("simple-git-section");
+    const unstagedHeader = unstagedSection.createDiv("simple-git-section-header");
+    unstagedHeader.createEl("span", { text: this.plugin.strings.viewUnstagedChanges, cls: "simple-git-section-title" });
+    const unstagedActions = unstagedHeader.createDiv("simple-git-section-actions");
+    this.selectUnstagedBtnEl = unstagedActions.createEl("button", { text: this.plugin.strings.viewSelectAll, cls: "simple-git-section-btn" });
+    this.selectUnstagedBtnEl.onclick = () => this.toggleSelectAll(false);
+    this.stageBtnEl = unstagedActions.createEl("button", { text: this.plugin.strings.viewStageSelected, cls: "simple-git-section-btn mod-cta" });
+    this.stageBtnEl.onclick = () => this.doStageSelected();
+    this.unstagedListEl = unstagedSection.createDiv("simple-git-file-list");
+
+    const stagedSection = body.createDiv("simple-git-section");
+    const stagedHeader = stagedSection.createDiv("simple-git-section-header");
+    stagedHeader.createEl("span", { text: this.plugin.strings.viewStagedChanges, cls: "simple-git-section-title" });
+    const stagedActions = stagedHeader.createDiv("simple-git-section-actions");
+    this.selectStagedBtnEl = stagedActions.createEl("button", { text: this.plugin.strings.viewSelectAll, cls: "simple-git-section-btn" });
+    this.selectStagedBtnEl.onclick = () => this.toggleSelectAll(true);
+    this.unstageBtnEl = stagedActions.createEl("button", { text: this.plugin.strings.viewUnstageSelected, cls: "simple-git-section-btn mod-warning" });
+    this.unstageBtnEl.onclick = () => this.doUnstageSelected();
+    this.stagedListEl = stagedSection.createDiv("simple-git-file-list");
+
+    this.errorEl = body.createDiv("simple-git-error-area");
+
+    const footer = container.createDiv("simple-git-footer");
+    this.commitInputEl = footer.createEl("textarea", {
+      cls: "simple-git-commit-input",
+      attr: { placeholder: this.plugin.settings.defaultCommitMessage || this.plugin.strings.viewCommitPlaceholder, rows: "2" },
+    });
+
+    this.commitBtnEl = footer.createEl("button", {
+      text: this.plugin.strings.viewCommitPush,
+      cls: "mod-cta simple-git-commit-btn",
+    });
+    this.commitBtnEl.onclick = () => this.doCommit();
+
+    await this.refresh();
+  }
+
+  async onClose() {}
+
+  async refresh() {
+    const s = this.plugin.strings;
+    this.unstagedListEl.empty();
+    this.stagedListEl.empty();
+    this.errorEl.empty();
+
+    this.commitInputEl.setAttribute("placeholder", this.plugin.settings.defaultCommitMessage || s.viewCommitPlaceholder);
+
+    try {
+      const changed = await this.plugin.getChangedFiles();
+      const unstaged = changed.filter((f) => !f.staged);
+      const staged = changed.filter((f) => f.staged);
+
+      const unstagedSelected = unstaged.filter((f) => this.selectedFiles.has(f.path));
+      const stagedSelected = staged.filter((f) => this.selectedFiles.has(f.path));
+
+      this.selectUnstagedBtnEl.textContent = unstagedSelected.length === unstaged.length && unstaged.length > 0
+        ? s.viewSelectAll
+        : s.viewSelectAll;
+      this.selectStagedBtnEl.textContent = s.viewSelectAll;
+
+      this.stageBtnEl.disabled = unstagedSelected.length === 0;
+      this.unstageBtnEl.disabled = stagedSelected.length === 0;
+
+      if (unstaged.length === 0) {
+        this.unstagedListEl.createEl("div", { text: s.viewNoChanges, cls: "simple-git-empty" });
+      } else {
+        for (const file of unstaged) {
+          this.createFileRow(this.unstagedListEl, file, false);
+        }
+      }
+
+      if (staged.length === 0) {
+        this.stagedListEl.createEl("div", { text: s.viewNothingStaged, cls: "simple-git-empty" });
+      } else {
+        for (const file of staged) {
+          this.createFileRow(this.stagedListEl, file, true);
+        }
+      }
+
+      this.commitBtnEl.disabled = staged.length === 0;
+    } catch (e: any) {
+      const isIndexError = e.message && (
+        e.message.includes("dircache") ||
+        e.message.includes("Invalid dircache") ||
+        e.message.includes("index")
+      );
+      if (isIndexError) {
+        this.errorEl.createEl("div", { text: s.viewIndexCorrupt, cls: "simple-git-error" });
+        const rebuildBtn = this.errorEl.createEl("button", { text: s.viewRebuildIndex, cls: "simple-git-rebuild-btn" });
+        rebuildBtn.onclick = async () => {
+          await this.plugin.rebuildIndex();
+          await this.refresh();
+        };
+      } else {
+        this.errorEl.createEl("div", { text: `Error: ${e.message}`, cls: "simple-git-error" });
+      }
+    }
+  }
+
+  private createFileRow(container: HTMLElement, file: ChangedFile, isStaged: boolean) {
+    const row = container.createDiv("simple-git-file");
+    const isSelected = this.selectedFiles.has(file.path);
+    if (isSelected) row.classList.add("simple-git-file-selected");
+
+    const statusClass = file.status === "modified" ? "modified" : file.status === "added" ? "added" : "deleted";
+    const statusLabel = file.status === "modified" ? this.plugin.strings.viewModified[0]
+      : file.status === "added" ? this.plugin.strings.viewAdded[0]
+      : this.plugin.strings.viewDeleted[0];
+
+    row.createSpan({ text: statusLabel, cls: `simple-git-file-status ${statusClass}` });
+    row.createSpan({ text: file.path, cls: "simple-git-file-path" });
+
+    row.onclick = () => {
+      if (this.selectedFiles.has(file.path)) {
+        this.selectedFiles.delete(file.path);
+      } else {
+        this.selectedFiles.add(file.path);
+      }
+      this.refresh();
+    };
+  }
+
+  private toggleSelectAll(isStagedSection: boolean) {
+    const allFiles = isStagedSection
+      ? Array.from(this.plugin.stagedFiles)
+      : [];
+
+    if (!isStagedSection) {
+      // Get all unstaged files
+      const allChanged = Array.from(this.plugin.stagedFiles);
+      // We need to get unstaged files - get all changed and filter
+      this.plugin.getChangedFiles().then((changed) => {
+        const unstaged = changed.filter((f) => !f.staged);
+        const allSelected = unstaged.every((f) => this.selectedFiles.has(f.path));
+        if (allSelected) {
+          unstaged.forEach((f) => this.selectedFiles.delete(f.path));
+        } else {
+          unstaged.forEach((f) => this.selectedFiles.add(f.path));
+        }
+        this.refresh();
+      });
+    } else {
+      const allSelected = allFiles.every((f) => this.selectedFiles.has(f));
+      if (allSelected) {
+        allFiles.forEach((f) => this.selectedFiles.delete(f));
+      } else {
+        allFiles.forEach((f) => this.selectedFiles.add(f));
+      }
+      this.refresh();
+    }
+  }
+
+  private async doStageSelected() {
+    const changed = await this.plugin.getChangedFiles();
+    const unstaged = changed.filter((f) => !f.staged && this.selectedFiles.has(f.path));
+    for (const f of unstaged) {
+      await this.plugin.stageFile(f.path);
+      this.selectedFiles.delete(f.path);
+    }
+    await this.refresh();
+  }
+
+  private async doUnstageSelected() {
+    const changed = await this.plugin.getChangedFiles();
+    const staged = changed.filter((f) => f.staged && this.selectedFiles.has(f.path));
+    for (const f of staged) {
+      await this.plugin.unstageFile(f.path);
+      this.selectedFiles.delete(f.path);
+    }
+    await this.refresh();
+  }
+
+  private async doCommit() {
+    const s = this.plugin.strings;
+    const message = this.commitInputEl.value;
+
+    this.commitBtnEl.disabled = true;
+    this.commitBtnEl.textContent = s.viewCommitting;
+
+    try {
+      await this.plugin.doCommitPushWithMessage(message);
+      this.commitInputEl.value = "";
+      this.selectedFiles.clear();
+      await this.refresh();
+    } finally {
+      this.commitBtnEl.disabled = false;
+      this.commitBtnEl.textContent = s.viewCommitPush;
+    }
   }
 }
 
@@ -675,7 +1134,7 @@ class SimpleGitSettingTab extends PluginSettingTab {
       .setDesc(s.settingLanguageDesc)
       .addDropdown((drop) => {
         drop.addOption("en", "English");
-        drop.addOption("zh", "中文");
+        drop.addOption("zh", "\u4e2d\u6587");
         drop.setValue(this.plugin.settings.language);
         drop.onChange(async (value) => {
           this.plugin.settings.language = value as Lang;
@@ -745,6 +1204,19 @@ class SimpleGitSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             const num = parseInt(value) || 0;
             this.plugin.settings.autoPullInterval = num;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName(s.settingDefaultCommitMessage)
+      .setDesc(s.settingDefaultCommitMessageDesc)
+      .addText((text) =>
+        text
+          .setPlaceholder("vault backup")
+          .setValue(this.plugin.settings.defaultCommitMessage)
+          .onChange(async (value) => {
+            this.plugin.settings.defaultCommitMessage = value;
             await this.plugin.saveSettings();
           })
       );
